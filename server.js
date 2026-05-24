@@ -5,15 +5,17 @@ const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
 
+const Stripe = require("stripe");
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 4242;
+
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || "https://monocular-frontend.vercel.app";
 
 app.use(cors({
-  origin: [
-    "https://monocular-frontend.vercel.app",
-    "https://monocular-frontend-xskd.vercel.app",
-    "http://localhost:3000"
-  ],
+  origin: "*",
   methods: ["GET", "POST"],
   allowedHeaders: ["Content-Type"]
 }));
@@ -21,24 +23,20 @@ app.use(cors({
 app.use(express.json());
 
 const uploadsDir = path.join(__dirname, "uploads");
-
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
 }
 
 const upload = multer({
   dest: uploadsDir,
-  limits: {
-    fileSize: 10 * 1024 * 1024
-  }
+  limits: { fileSize: 10 * 1024 * 1024 }
 });
 
-// Health check
 app.get("/", (req, res) => {
   res.json({
     ok: true,
     service: "monocular-server",
-    message: "Backend is running"
+    message: "Backend running"
   });
 });
 
@@ -50,7 +48,48 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Render endpoint
+app.post("/create-checkout-session", async (req, res) => {
+  try {
+    const { priceId } = req.body;
+
+    if (!priceId) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing Stripe priceId"
+      });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      payment_method_types: ["card"],
+
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1
+        }
+      ],
+
+      success_url: `${FRONTEND_URL}/?paid=true`,
+      cancel_url: `${FRONTEND_URL}/?cancelled=true`
+    });
+
+    res.json({
+      ok: true,
+      url: session.url
+    });
+
+  } catch (error) {
+    console.error("Stripe error:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: "Stripe checkout failed",
+      details: error.message
+    });
+  }
+});
+
 app.post("/render", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) {
@@ -60,12 +99,11 @@ app.post("/render", upload.single("image"), async (req, res) => {
       });
     }
 
-    // TEMP TEST RESPONSE
-    // This proves frontend -> backend upload is working.
-    // AI rendering can be connected after this works.
-    return res.json({
+    // TEMP render response.
+    // This confirms payment -> frontend -> backend upload works.
+    res.json({
       ok: true,
-      message: "Image received by backend",
+      message: "Image received by backend. Render engine ready to connect.",
       filename: req.file.filename,
       originalName: req.file.originalname,
       size: req.file.size
@@ -74,7 +112,7 @@ app.post("/render", upload.single("image"), async (req, res) => {
   } catch (error) {
     console.error("Render error:", error);
 
-    return res.status(500).json({
+    res.status(500).json({
       ok: false,
       error: "Render failed",
       details: error.message
