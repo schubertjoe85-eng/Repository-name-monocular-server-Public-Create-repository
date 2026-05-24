@@ -218,9 +218,9 @@
 <p class="p1"><span class="Apple-converted-space">          </span>"Content-Type":"application/json"</p>
 <p class="p1"><span class="Apple-converted-space">        </span>},</p>
 <p class="p1"><span class="Apple-converted-space">        </span>body: JSON.stringify({</p>
-<p class="p1"><span class="Apple-converted-space">          </span>userId,</p>
-<p class="p1"><span class="Apple-converted-space">          </span>plan</p>
-<p class="p1"><span class="Apple-converted-space">        </span>})</p>
+<p class="p1"><span class="Apple-converted-space">  </span>userId,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>pack: plan</p>
+<p class="p1">})</p>
 <p class="p1"><span class="Apple-converted-space">      </span>}</p>
 <p class="p1"><span class="Apple-converted-space">    </span>);</p>
 <p class="p2"><br></p>
@@ -280,7 +280,11 @@
 <p class="p1"><span class="Apple-converted-space">    </span>const data = await res.json();</p>
 <p class="p2"><br></p>
 <p class="p1"><span class="Apple-converted-space">    </span>if(!res.ok){</p>
-<p class="p1"><span class="Apple-converted-space">      </span>alert(data.message || data.error || "Render failed");</p>
+<p class="p1"><span class="Apple-converted-space">      </span>if (res.status === 403 || res.status === 402) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>alert("You need credits before rendering. Buy a $2 credit first.");</p>
+<p class="p1">} else {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>alert(data.message || data.error || "Render failed");</p>
+<p class="p1">}</p>
 <p class="p1"><span class="Apple-converted-space">      </span>document.getElementById("status").innerText = "";</p>
 <p class="p1"><span class="Apple-converted-space">      </span>return;</p>
 <p class="p1"><span class="Apple-converted-space">    </span>}</p>
