@@ -1,9 +1,9 @@
-import express from 'express';
-import cors from 'cors';
-import dotenv from 'dotenv';
-import fs from 'fs';
-import OpenAI, { toFile } from 'openai';
-import Stripe from 'stripe';
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import fs from "fs";
+import OpenAI, { toFile } from "openai";
+import Stripe from "stripe";
 
 dotenv.config();
 
@@ -11,381 +11,193 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 app.use(cors());
-app.use(express.json({ limit: '120mb' }));
+app.use(express.json({ limit: "120mb" }));
 
-const FRONTEND_URL =
-  process.env.FRONTEND_URL || 'https://monocular-opal.vercel.app';
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-const CREDIT_FILE = './credits.json';
-const OWNER_TEST_CODE = 'MONOCULAR-OWNER-TEST';
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://monocular-opal.vercel.app";
+const USERS_FILE = "./users.json";
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-const stripe = process.env.STRIPE_SECRET_KEY
-  ? new Stripe(process.env.STRIPE_SECRET_KEY)
-  : null;
-
-function readCredits() {
+function readUsers() {
   try {
-    if (!fs.existsSync(CREDIT_FILE)) return {};
-    return JSON.parse(fs.readFileSync(CREDIT_FILE, 'utf8'));
+    if (!fs.existsSync(USERS_FILE)) return {};
+    return JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
   } catch {
     return {};
   }
 }
 
-function writeCredits(data) {
-  fs.writeFileSync(CREDIT_FILE, JSON.stringify(data, null, 2));
+function writeUsers(users) {
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 }
 
-function getCredits(sessionId) {
-  if (!sessionId) return 0;
-  const data = readCredits();
-  return data[sessionId]?.credits || 0;
+function getUser(userId) {
+  const users = readUsers();
+  return users[userId] || null;
 }
 
-function addCredits(sessionId, amount) {
-  const data = readCredits();
-
-  if (!data[sessionId]) {
-    data[sessionId] = {
-      credits: 0,
-      usedStripeSessions: [],
-    };
-  }
-
-  data[sessionId].credits += amount;
-  writeCredits(data);
-
-  return data[sessionId].credits;
+function saveUser(userId, data) {
+  const users = readUsers();
+  users[userId] = data;
+  writeUsers(users);
 }
 
-function deductCredit(sessionId) {
-  const data = readCredits();
-
-  if (!data[sessionId] || data[sessionId].credits <= 0) {
-    return false;
-  }
-
-  data[sessionId].credits -= 1;
-  writeCredits(data);
-
-  return true;
+function hasAccess(user) {
+  if (!user) return false;
+  if (user.subscriptionActive) return true;
+  if (user.trialEndsAt && Date.now() < user.trialEndsAt) return true;
+  return false;
 }
 
-function hasUsedStripeSession(sessionId, stripeSessionId) {
-  const data = readCredits();
-  return data[sessionId]?.usedStripeSessions?.includes(stripeSessionId);
-}
-
-function markStripeSessionUsed(sessionId, stripeSessionId) {
-  const data = readCredits();
-
-  if (!data[sessionId]) {
-    data[sessionId] = {
-      credits: 0,
-      usedStripeSessions: [],
-    };
-  }
-
-  if (!data[sessionId].usedStripeSessions.includes(stripeSessionId)) {
-    data[sessionId].usedStripeSessions.push(stripeSessionId);
-  }
-
-  writeCredits(data);
-}
-
-async function dataUrlToFile(dataUrl, fileName = 'monocular-input.png') {
+async function dataUrlToFile(dataUrl) {
   const match = String(dataUrl).match(/^data:(.+);base64,(.+)$/);
+  if (!match) throw new Error("Invalid uploaded image");
 
-  if (!match) {
-    throw new Error('Invalid uploaded image format.');
-  }
-
-  const mimeType = match[1];
-  const base64 = match[2];
-  const buffer = Buffer.from(base64, 'base64');
-
-  return toFile(buffer, fileName, {
-    type: mimeType,
-  });
+  const buffer = Buffer.from(match[2], "base64");
+  return toFile(buffer, "monocular-upload.png", { type: match[1] });
 }
 
-function buildPrompt(prompt = '', fileName = '') {
-  return `
-You are MONOCULAR, a restrained architectural AI rendering engine.
+app.get("/", (req, res) => {
+  res.json({ ok: true, status: "healthy" });
+});
 
-Create a realistic architectural render from the uploaded drawing/image.
+app.get("/health", (req, res) => {
+  res.json({ ok: true, status: "healthy" });
+});
 
-Preserve:
-- the same building
-- the same massing
-- the same roof form
-- the same walls
-- the same window and door locations
-- the same camera angle
-- the same architectural intent
+app.post("/status", (req, res) => {
+  const { userId } = req.body;
+  const user = getUser(userId);
 
-Improve:
-- realism
-- material quality
-- natural lighting
-- shadows
-- landscape
-- atmosphere
-- presentation quality
-
-Do not:
-- redesign the building
-- invent extra floors
-- move doors or windows
-- change the roof shape
-- create fantasy architecture
-
-User instructions:
-${prompt || 'Create a realistic architectural render while preserving the design.'}
-
-Source file:
-${fileName || 'uploaded image'}
-`;
-}
-
-app.get('/', (req, res) => {
   res.json({
-    ok: true,
-    status: 'healthy',
-    service: 'MONOCULAR server',
+    hasAccess: hasAccess(user),
+    trialEndsAt: user?.trialEndsAt || null,
+    subscriptionActive: !!user?.subscriptionActive,
   });
 });
 
-app.get('/health', (req, res) => {
-  res.json({
-    ok: true,
-    status: 'healthy',
-  });
-});
+app.post("/start-trial", (req, res) => {
+  const { userId } = req.body;
 
-app.get('/credits', (req, res) => {
-  const { sessionId } = req.query;
+  if (!userId) return res.status(400).json({ error: "Missing userId" });
 
-  if (!sessionId) {
-    return res.status(400).json({
-      success: false,
-      error: 'Missing sessionId.',
-      credits: 0,
+  const existing = getUser(userId);
+
+  if (existing?.trialStarted) {
+    return res.json({
+      success: true,
+      trialEndsAt: existing.trialEndsAt,
+      alreadyStarted: true,
     });
   }
 
-  return res.json({
-    success: true,
-    credits: getCredits(String(sessionId)),
+  const trialEndsAt = Date.now() + 3 * 24 * 60 * 60 * 1000;
+
+  saveUser(userId, {
+    trialStarted: true,
+    trialEndsAt,
+    subscriptionActive: false,
   });
+
+  res.json({ success: true, trialEndsAt });
 });
 
-app.get('/buy', async (req, res) => {
+app.post("/create-subscription", async (req, res) => {
   try {
-    if (!stripe) {
-      return res.status(500).send('STRIPE_SECRET_KEY missing on server.');
-    }
+    const { userId } = req.body;
 
-    const { pack, sessionId } = req.query;
-
-    if (!sessionId) {
-      return res.status(400).send('Missing sessionId.');
-    }
-
-    let priceId = '';
-    let credits = 0;
-
-    if (String(pack) === '1') {
-      priceId = process.env.STRIPE_PRICE_1 || '';
-      credits = 1;
-    }
-
-    if (String(pack) === '30') {
-      priceId = process.env.STRIPE_PRICE_30 || '';
-      credits = 30;
-    }
-
-    if (!priceId || credits === 0) {
-      return res.status(500).send('Stripe price ID missing or invalid pack.');
-    }
+    if (!userId) return res.status(400).json({ error: "Missing userId" });
 
     const checkout = await stripe.checkout.sessions.create({
-      mode: 'payment',
+      mode: "subscription",
       line_items: [
         {
-          price: priceId,
+          price: process.env.STRIPE_MONTHLY_PRICE_ID,
           quantity: 1,
         },
       ],
-      metadata: {
-        monocularSessionId: String(sessionId),
-        credits: String(credits),
-      },
-      success_url: `${FRONTEND_URL}?paid=true&stripe_session_id={CHECKOUT_SESSION_ID}&sessionId=${encodeURIComponent(
-        String(sessionId)
-      )}`,
-      cancel_url: `${FRONTEND_URL}?cancelled=true`,
+      metadata: { userId },
+      success_url: `${FRONTEND_URL}?subscribed=true&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: FRONTEND_URL,
     });
 
-    return res.redirect(303, checkout.url);
-  } catch (error) {
-    console.error('BUY ERROR:', error);
-
-    return res.status(500).send(error.message || 'Stripe checkout failed.');
+    res.json({ url: checkout.url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/verify-session', async (req, res) => {
+app.post("/verify-subscription", async (req, res) => {
   try {
-    if (!stripe) {
-      return res.status(500).json({
-        success: false,
-        error: 'STRIPE_SECRET_KEY missing on server.',
-      });
+    const { userId, sessionId } = req.body;
+
+    if (!userId || !sessionId) {
+      return res.status(400).json({ error: "Missing userId or sessionId" });
     }
 
-    const { stripe_session_id, sessionId } = req.query;
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    if (!stripe_session_id || !sessionId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing stripe_session_id or sessionId.',
-      });
+    if (session.payment_status !== "paid") {
+      return res.status(402).json({ error: "Subscription payment not complete" });
     }
 
-    const localSessionId = String(sessionId);
-    const stripeSessionId = String(stripe_session_id);
+    const existing = getUser(userId) || {};
 
-    if (hasUsedStripeSession(localSessionId, stripeSessionId)) {
-      return res.json({
-        success: true,
-        credits: getCredits(localSessionId),
-        message: 'Stripe session already verified.',
-      });
-    }
-
-    const checkout = await stripe.checkout.sessions.retrieve(stripeSessionId);
-
-    if (checkout.payment_status !== 'paid') {
-      return res.status(402).json({
-        success: false,
-        error: 'Payment not completed.',
-      });
-    }
-
-    const checkoutSessionId =
-      checkout.metadata?.monocularSessionId || localSessionId;
-
-    const creditsToAdd = Number(checkout.metadata?.credits || 0);
-
-    if (!creditsToAdd) {
-      return res.status(400).json({
-        success: false,
-        error: 'No credits found in Stripe session metadata.',
-      });
-    }
-
-    addCredits(checkoutSessionId, creditsToAdd);
-    markStripeSessionUsed(checkoutSessionId, stripeSessionId);
-
-    return res.json({
-      success: true,
-      credits: getCredits(checkoutSessionId),
+    saveUser(userId, {
+      ...existing,
+      subscriptionActive: true,
     });
-  } catch (error) {
-    console.error('VERIFY ERROR:', error);
 
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Payment verification failed.',
-    });
+    res.json({ success: true, subscriptionActive: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-app.post('/render', async (req, res) => {
+app.post("/render", async (req, res) => {
   try {
-    const { selectedImage, prompt, fileName, sessionId } = req.body;
-    const ownerCode = req.headers['x-monocular-access'];
+    const { userId, selectedImage, prompt } = req.body;
 
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: 'OPENAI_API_KEY missing on server.',
+    const user = getUser(userId);
+
+    if (!hasAccess(user)) {
+      return res.status(403).json({
+        error: "Start your 3-day free trial or subscribe to render.",
       });
     }
 
     if (!selectedImage) {
-      return res.status(400).json({
-        success: false,
-        error: 'No uploaded image received.',
-      });
+      return res.status(400).json({ error: "Upload an image first." });
     }
 
-    if (!sessionId && ownerCode !== OWNER_TEST_CODE) {
-      return res.status(401).json({
-        success: false,
-        error: 'No session found. Buy credits first.',
-      });
-    }
-
-    const credits = getCredits(String(sessionId || 'owner'));
-
-    const isOwnerTest = ownerCode === OWNER_TEST_CODE;
-
-    if (credits <= 0 && !isOwnerTest) {
-      return res.status(402).json({
-        success: false,
-        error: 'No render credits remaining. Please buy credits first.',
-        credits: 0,
-      });
-    }
-
-    console.log('MONOCULAR render request received');
-
-    const imageFile = await dataUrlToFile(
-      selectedImage,
-      fileName || 'monocular-input.png'
-    );
+    const imageFile = await dataUrlToFile(selectedImage);
 
     const result = await openai.images.edit({
-      model: 'gpt-image-1',
+      model: "gpt-image-1",
       image: imageFile,
-      prompt: buildPrompt(prompt, fileName),
-      size: '1024x1024',
+      prompt:
+        prompt ||
+        "Create a realistic architectural render from this uploaded drawing. Preserve the building form, roof, windows, doors, and camera angle.",
+      size: "1024x1024",
     });
 
     const base64 = result.data?.[0]?.b64_json;
 
     if (!base64) {
-      return res.status(500).json({
-        success: false,
-        error: 'OpenAI returned no image.',
-      });
+      return res.status(500).json({ error: "OpenAI returned no image." });
     }
 
-    if (!isOwnerTest) {
-      deductCredit(String(sessionId));
-    }
-
-    return res.json({
+    res.json({
       success: true,
       image: `data:image/png;base64,${base64}`,
-      credits: isOwnerTest ? credits : getCredits(String(sessionId)),
     });
-  } catch (error) {
-    console.error('RENDER ERROR:', error);
-
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Render failed.',
-    });
+  } catch (err) {
+    console.error("RENDER ERROR:", err);
+    res.status(500).json({ error: err.message || "Render failed" });
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`MONOCULAR server running on port ${PORT}`);
 });
