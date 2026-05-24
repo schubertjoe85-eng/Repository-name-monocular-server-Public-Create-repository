@@ -140,13 +140,13 @@
 <p class="p1"><span class="Apple-converted-space">  </span>&lt;/div&gt;</p>
 <p class="p2"><br></p>
 <p class="p1"><span class="Apple-converted-space">  </span>&lt;div class="pricing"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;button class="buy" onclick="buyPlan('starter')"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">      </span>Buy 1 Credit — $2</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;/button&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>&lt;button class="buy" onclick="buyPlan('1')"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>Buy 1 Credit — $2</p>
+<p class="p1">&lt;/button&gt;</p>
 <p class="p2"><br></p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;button class="buy" onclick="buyPlan('pro')"&gt;</p>
-<p class="p1"><span class="Apple-converted-space">      </span>Buy 20 Credits — $29</p>
-<p class="p1"><span class="Apple-converted-space">    </span>&lt;/button&gt;</p>
+<p class="p1">&lt;button class="buy" onclick="buyPlan('30')"&gt;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>Buy 30 Credits — $29</p>
+<p class="p1">&lt;/button&gt;</p>
 <p class="p1"><span class="Apple-converted-space">  </span>&lt;/div&gt;</p>
 <p class="p2"><br></p>
 <p class="p1"><span class="Apple-converted-space">  </span>&lt;input type="file" id="imageInput" accept="image/*"/&gt;</p>
@@ -211,7 +211,7 @@
 <p class="p1"><span class="Apple-converted-space">  </span>try {</p>
 <p class="p2"><br></p>
 <p class="p1"><span class="Apple-converted-space">    </span>const res = await fetch(</p>
-<p class="p1"><span class="Apple-converted-space">      </span>`${API}/api/create-checkout-session`,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>`${API}/api/checkout`</p>
 <p class="p1"><span class="Apple-converted-space">      </span>{</p>
 <p class="p1"><span class="Apple-converted-space">        </span>method:"POST",</p>
 <p class="p1"><span class="Apple-converted-space">        </span>headers:{</p>
