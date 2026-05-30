@@ -1,14 +1,14 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import OpenAI, { toFile } from "openai";
+import OpenAI from "openai";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 const API_KEY = process.env.OPENAI_API_KEY;
-console.log("OPENAI KEY FOUND:", !!API_KEY);
+
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 
@@ -28,98 +28,78 @@ app.get("/health", (req, res) => {
   });
 });
 
-function dataUrlToBuffer(dataUrl) {
-  const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
-  return Buffer.from(base64, "base64");
-}
+async function createRender(prompt = "") {
+  if (!API_KEY) {
+    throw new Error("Missing OpenAI API key");
+  }
 
-function buildPrompt(prompt = "") {
-  return `
-Create a realistic architectural render from the uploaded image.
+  const finalPrompt = `
+Create a realistic architectural render.
 
 User brief:
-${prompt || "Refined architectural render with natural light."}
+${prompt || "A refined modern architectural house with natural light."}
 
 Rules:
-- preserve the original building geometry
-- preserve roof forms, proportions, openings and layout
-- improve materials, light, landscape and atmosphere
-- keep it realistic and buildable
-- avoid fantasy shapes
-- avoid random extra buildings
-- avoid text, labels, signs or logos in the image
-- make it feel like a grounded architectural visualisation
+- realistic architectural visualisation
+- natural light
+- believable materials
+- no cartoon style
+- no text or labels
+- no fantasy shapes
+- clean professional presentation
 `;
+
+  const response = await openai.images.generate({
+    model: "gpt-image-1",
+    prompt: finalPrompt,
+    size: "1024x1024",
+  });
+
+  const imageBase64 = response.data?.[0]?.b64_json;
+
+  if (!imageBase64) {
+    throw new Error("No image returned from OpenAI");
+  }
+
+  return imageBase64;
 }
 
-async function handleRender(req, res) {
-  console.log("🔥 RENDER HIT");
-  console.log("BODY KEYS:", Object.keys(req.body || {}));
-
+app.post("/render", async (req, res) => {
   try {
-    if (!API_KEY) {
-      return res.status(500).json({
-        ok: false,
-        error: "Missing OpenAI API key",
-      });
-    }
+    const { prompt = "" } = req.body || {};
+    const imageBase64 = await createRender(prompt);
 
-    const prompt = req.body?.prompt || "";
-    const imageBase64 = req.body?.imageBase64 || req.body?.image || "";
-
-    if (!imageBase64) {
-      return res.status(400).json({
-        ok: false,
-        error: "No image supplied",
-      });
-    }
-
-    const imageBuffer = dataUrlToBuffer(imageBase64);
-
-    const imageFile = await toFile(imageBuffer, "input.png", {
-      type: "image/png",
-    });
-
-    const result = await openai.images.edit({
-      model: "gpt-image-1",
-      image: imageFile,
-      prompt: buildPrompt(prompt),
-      size: "1024x1024",
-    });
-
-    const output = result.data?.[0]?.b64_json;
-
-    if (!output) {
-      return res.status(500).json({
-        ok: false,
-        error: "No image returned from OpenAI",
-      });
-    }
-
-    return res.json({
+    res.json({
       ok: true,
-      imageBase64: output,
-      image: `data:image/png;base64,${output}`,
+      image: `data:image/png;base64,${imageBase64}`,
+      imageBase64,
     });
   } catch (error) {
-    console.error("🔥 Render error:", error);
-
-    return res.status(500).json({
+    console.error("Render error:", error);
+    res.status(500).json({
       ok: false,
       error: error.message || "Render failed",
     });
   }
-}
+});
 
-app.post("/api/render", handleRender);
-app.post("/render", handleRender);
+app.post("/api/render", async (req, res) => {
+  try {
+    const { prompt = "" } = req.body || {};
+    const imageBase64 = await createRender(prompt);
 
-app.post("/api/brain", async (req, res) => {
-  return res.json({
-    ok: true,
-    analysis:
-      "Monocular has received the drawing/image. The render should preserve the original building geometry, improve materiality, lighting, landscape context and realism, and avoid fantasy forms or random additions.",
-  });
+    res.json({
+      ok: true,
+      image: `data:image/png;base64,${imageBase64}`,
+      imageBase64,
+    });
+  } catch (error) {
+    console.error("API render error:", error);
+    res.status(500).json({
+      ok: false,
+      error: error.message || "Render failed",
+    });
+  }
 });
 
 app.listen(PORT, () => {
