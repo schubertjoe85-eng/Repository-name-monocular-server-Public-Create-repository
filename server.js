@@ -17,38 +17,46 @@ const openai = new OpenAI({
 
 function buildMonocularPrompt(userPrompt) {
   return `
-You are Monocular, a strict architectural rendering engine.
+MONOCULAR ARCHITECTURAL MODE
 
-Your task is to create a realistic architectural visualisation.
+PRIMARY RULE:
+The uploaded image is the design authority.
+Do not redesign the building.
 
-You must improve the image without redesigning the project.
+Preserve:
+- massing
+- proportions
+- roof form
+- window positions
+- door positions
+- facade composition
+- floor count
+- main geometry
+- original architectural intent
 
-Hard rules:
-- Preserve the uploaded building geometry.
-- Preserve roof shape, wall positions, proportions and massing.
-- Preserve window and door locations where visible.
-- Do not add extra floors.
-- Do not invent random buildings.
-- Do not create fantasy shapes.
-- Do not turn the image into a cartoon, painting or abstract artwork.
-- Do not ignore the uploaded image.
-- Do not change the design language unless the user specifically asks.
-- Keep the result realistic, professional, buildable and suitable for a client presentation.
+You may improve:
+- realistic materials
+- natural lighting
+- shadows
+- landscaping
+- sky and atmosphere
+- render quality
+- professional architectural presentation
 
-Allowed improvements:
-- Better materials.
-- Better light.
-- Better shadows.
-- Better landscaping.
-- Better sky and atmosphere.
-- Better architectural presentation.
-- Cleaner realism.
-- More refined rendering quality.
+Do not:
+- invent a different building
+- add extra floors
+- change the roof
+- move windows or doors
+- create fantasy shapes
+- turn it into a cartoon
+- ignore the source image
 
-If the uploaded image is a sketch, read it as an architectural sketch.
-If the uploaded image is a model/photo, preserve it as the design source.
+The output must look like the uploaded project rendered by a professional architectural visualiser.
 
-User brief:
+If uncertain, preserve the original geometry.
+
+User instructions:
 ${userPrompt || "Create a realistic architectural render from the uploaded image."}
 `;
 }
@@ -72,10 +80,24 @@ app.post("/render", async (req, res) => {
   try {
     const { prompt, imageBase64 } = req.body || {};
 
+    if (!imageBase64) {
+      return res.status(400).json({
+        ok: false,
+        error: "No source image supplied",
+      });
+    }
+
     const finalPrompt = buildMonocularPrompt(prompt);
 
-    const response = await openai.images.generate({
+    const imageBuffer = Buffer.from(imageBase64, "base64");
+
+    const imageFile = await OpenAI.toFile(imageBuffer, "source.png", {
+      type: "image/png",
+    });
+
+    const response = await openai.images.edit({
       model: "gpt-image-1",
+      image: imageFile,
       prompt: finalPrompt,
       size: "1024x1024",
     });
