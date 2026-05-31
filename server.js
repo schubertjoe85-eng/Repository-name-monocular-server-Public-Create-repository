@@ -6,96 +6,97 @@ import OpenAI from "openai";
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 10000;
-const API_KEY = process.env.OPENAI_API_KEY;
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: "50mb" }));
+app.use(express.json({ limit: "35mb" }));
 
 const openai = new OpenAI({
-  apiKey: API_KEY,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
+function buildMonocularPrompt(userPrompt) {
+  return `
+You are Monocular, a strict architectural rendering engine.
+
+Your task is to create a realistic architectural visualisation.
+
+You must improve the image without redesigning the project.
+
+Hard rules:
+- Preserve the uploaded building geometry.
+- Preserve roof shape, wall positions, proportions and massing.
+- Preserve window and door locations where visible.
+- Do not add extra floors.
+- Do not invent random buildings.
+- Do not create fantasy shapes.
+- Do not turn the image into a cartoon, painting or abstract artwork.
+- Do not ignore the uploaded image.
+- Do not change the design language unless the user specifically asks.
+- Keep the result realistic, professional, buildable and suitable for a client presentation.
+
+Allowed improvements:
+- Better materials.
+- Better light.
+- Better shadows.
+- Better landscaping.
+- Better sky and atmosphere.
+- Better architectural presentation.
+- Cleaner realism.
+- More refined rendering quality.
+
+If the uploaded image is a sketch, read it as an architectural sketch.
+If the uploaded image is a model/photo, preserve it as the design source.
+
+User brief:
+${userPrompt || "Create a realistic architectural render from the uploaded image."}
+`;
+}
+
 app.get("/", (req, res) => {
-  res.send("MONOCULAR SERVER LIVE");
+  res.json({
+    ok: true,
+    name: "Monocular Server",
+    status: "running",
+  });
 });
 
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    status: "alive",
-    time: new Date().toISOString(),
+    status: "healthy",
   });
 });
-
-async function createRender(prompt = "") {
-  if (!API_KEY) {
-    throw new Error("Missing OpenAI API key");
-  }
-
-  const finalPrompt = `
-Create a realistic architectural render.
-
-User brief:
-${prompt || "A refined modern architectural house with natural light."}
-
-Rules:
-- realistic architectural visualisation
-- natural light
-- believable materials
-- no cartoon style
-- no text or labels
-- no fantasy shapes
-- clean professional presentation
-`;
-
-  const response = await openai.images.generate({
-    model: "gpt-image-1",
-    prompt: finalPrompt,
-    size: "1024x1024",
-  });
-
-  const imageBase64 = response.data?.[0]?.b64_json;
-
-  if (!imageBase64) {
-    throw new Error("No image returned from OpenAI");
-  }
-
-  return imageBase64;
-}
 
 app.post("/render", async (req, res) => {
   try {
-    const { prompt = "" } = req.body || {};
-    const imageBase64 = await createRender(prompt);
+    const { prompt, imageBase64 } = req.body || {};
 
-    res.json({
+    const finalPrompt = buildMonocularPrompt(prompt);
+
+    const response = await openai.images.generate({
+      model: "gpt-image-1",
+      prompt: finalPrompt,
+      size: "1024x1024",
+    });
+
+    const imageBase64Out = response?.data?.[0]?.b64_json;
+
+    if (!imageBase64Out) {
+      return res.status(500).json({
+        ok: false,
+        error: "No image returned from OpenAI",
+      });
+    }
+
+    return res.json({
       ok: true,
-      image: `data:image/png;base64,${imageBase64}`,
-      imageBase64,
+      image: `data:image/png;base64,${imageBase64Out}`,
     });
   } catch (error) {
     console.error("Render error:", error);
-    res.status(500).json({
-      ok: false,
-      error: error.message || "Render failed",
-    });
-  }
-});
 
-app.post("/api/render", async (req, res) => {
-  try {
-    const { prompt = "" } = req.body || {};
-    const imageBase64 = await createRender(prompt);
-
-    res.json({
-      ok: true,
-      image: `data:image/png;base64,${imageBase64}`,
-      imageBase64,
-    });
-  } catch (error) {
-    console.error("API render error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       error: error.message || "Render failed",
     });
@@ -103,5 +104,5 @@ app.post("/api/render", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`MONOCULAR server running on port ${PORT}`);
+  console.log(`Monocular server running on port ${PORT}`);
 });
