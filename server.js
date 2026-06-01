@@ -11,7 +11,15 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json({ limit: "35mb" }));
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// TEMP render cap.
+// This resets when Render restarts.
+// Proper production version later needs a database.
+const users = {};
+const FREE_RENDER_LIMIT = 5;
 
 function buildPrompt(userPrompt, mode) {
   const base = `
@@ -77,21 +85,66 @@ ${userPrompt || "Create a realistic architectural render."}`;
 }
 
 app.get("/", (req, res) => {
-  res.json({ ok: true, name: "Monocular Server", status: "running" });
+  res.json({
+    ok: true,
+    name: "Monocular Server",
+    status: "running",
+  });
 });
 
 app.get("/health", (req, res) => {
-  res.json({ ok: true, status: "healthy" });
+  res.json({
+    ok: true,
+    status: "healthy",
+  });
+});
+
+app.get("/credits/:userId", (req, res) => {
+  const userId = req.params.userId || "guest";
+
+  if (!users[userId]) {
+    users[userId] = {
+      rendersRemaining: FREE_RENDER_LIMIT,
+    };
+  }
+
+  res.json({
+    ok: true,
+    userId,
+    rendersRemaining: users[userId].rendersRemaining,
+  });
 });
 
 app.post("/render", async (req, res) => {
   try {
-    const { prompt, imageBase64, mode = "render" } = req.body || {};
+    const {
+      prompt,
+      imageBase64,
+      mode = "render",
+      userId = "guest",
+      subscriptionActive = false,
+    } = req.body || {};
 
     if (!imageBase64) {
       return res.status(400).json({
         ok: false,
         error: "Upload an image first.",
+      });
+    }
+
+    if (!users[userId]) {
+      users[userId] = {
+        rendersRemaining: FREE_RENDER_LIMIT,
+      };
+    }
+
+    // If not subscribed, limit to free render allowance.
+    // If subscribed, allow rendering.
+    if (!subscriptionActive && users[userId].rendersRemaining <= 0) {
+      return res.status(403).json({
+        ok: false,
+        error: "No free renders remaining. Subscription required.",
+        rendersRemaining: 0,
       });
     }
 
@@ -118,12 +171,19 @@ app.post("/render", async (req, res) => {
       });
     }
 
+    // Only subtract free credits from non-subscribed users.
+    if (!subscriptionActive) {
+      users[userId].rendersRemaining -= 1;
+    }
+
     return res.json({
       ok: true,
       image: `data:image/png;base64,${imageBase64Out}`,
+      rendersRemaining: users[userId].rendersRemaining,
     });
   } catch (error) {
     console.error("Render error:", error);
+
     return res.status(500).json({
       ok: false,
       error: error.message || "Render failed.",
