@@ -140,13 +140,7 @@ app.post("/render", async (req, res) => {
 
     // If not subscribed, limit to free render allowance.
     // If subscribed, allow rendering.
-    if (!subscriptionActive && users[userId].rendersRemaining <= 0) {
-      return res.status(403).json({
-        ok: false,
-        error: "No free renders remaining. Subscription required.",
-        rendersRemaining: 0,
-      });
-    }
+    
 
     const finalPrompt = buildPrompt(prompt, mode);
     const imageBuffer = Buffer.from(imageBase64, "base64");
