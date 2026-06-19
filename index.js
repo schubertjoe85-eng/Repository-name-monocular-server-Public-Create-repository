@@ -141,14 +141,16 @@ Avoid:
 ${brief.negativePrompt}
 
 Global quality rules:
-Photorealistic architectural visualisation.
-Believable scale.
-Realistic shadows.
-Correct perspective.
-No warped geometry.
+Ultra photorealistic architectural visualisation, magazine quality.
+Believable scale and correct one-point/two-point perspective.
+Sharp focus on the building, natural depth of field in the background.
+Physically accurate shadows, ambient occlusion, and reflections.
+High dynamic range lighting (no blown-out sky, no crushed shadows).
+Crisp, high-resolution material textures (timber grain, render, glass, stone).
+No warped geometry, no melted edges, no duplicated structural elements.
 No random extra doors or windows.
 No fantasy elements unless explicitly requested.
-Preserve the supplied design intent.
+Preserve the supplied design intent exactly.
 `;
 }
 
@@ -158,6 +160,10 @@ app.get("/", (req, res) => {
     app: "thedoss server",
     brain: "Architectural Director active"
   });
+});
+
+app.get("/health", (req, res) => {
+  res.json({ ok: true, status: "healthy" });
 });
 
 app.post("/api/memory", (req, res) => {
@@ -187,169 +193,5 @@ app.post("/api/brain", async (req, res) => {
       return res.status(400).json({ error: "Missing prompt." });
     }
 
-    const brief = await buildBrain({
-      userPrompt: prompt,
-      renderMode: mode || "image",
-      uploadedImageBase64: imageBase64
-    });
+    const brief = await
 
-    res.json({
-      ok: true,
-      brief
-    });
-  } catch (error) {
-    console.error("Brain error:", error);
-    res.status(500).json({
-      error: "Brain failed.",
-      detail: error.message
-    });
-  }
-});
-
-app.post("/api/render", async (req, res) => {
-  try {
-    const { prompt, imageBase64 } = req.body;
-
-    if (!prompt) {
-      return res.status(400).json({ error: "Missing prompt." });
-    }
-
-    const brief = await buildBrain({
-      userPrompt: prompt,
-      renderMode: "image",
-      uploadedImageBase64: imageBase64
-    });
-
-    const finalPrompt = buildFinalImagePrompt(brief);
-
-    const response = await openai.responses.create({
-      model: "gpt-5.5",
-      input: [
-        {
-          role: "user",
-          content: [
-            { type: "input_text", text: finalPrompt },
-            ...(imageBase64
-              ? [{
-                  type: "input_image",
-                  image_url: imageBase64.startsWith("data:")
-                    ? imageBase64
-                    : `data:image/png;base64,${imageBase64}`
-                }]
-              : [])
-          ]
-        }
-      ],
-      tools: [{ type: "image_generation" }]
-    });
-
-    const imageCall = response.output.find(
-      item => item.type === "image_generation_call"
-    );
-
-    res.json({
-      ok: true,
-      brief,
-      imageBase64: imageCall?.result || null
-    });
-  } catch (error) {
-    console.error("Render error:", error);
-    res.status(500).json({
-      error: "Render failed.",
-      detail: error.message
-    });
-  }
-});
-
-app.post("/api/video", async (req, res) => {
-  try {
-    const { prompt, imageBase64 } = req.body;
-
-    if (!prompt) {
-      return res.status(400).json({ error: "Missing prompt." });
-    }
-
-    const brief = await buildBrain({
-      userPrompt: prompt,
-      renderMode: "video",
-      uploadedImageBase64: imageBase64
-    });
-
-    const videoPrompt = `
-Create an architectural video for thedoss.
-
-Scene:
-${brief.cleanPrompt}
-
-Camera:
-Slow cinematic architectural dolly/orbit.
-Stable lens.
-No warping.
-No melting.
-No changing the building shape.
-
-Materials:
-${brief.materials}
-
-Site:
-${brief.siteContext}
-
-Lighting:
-${brief.lighting}
-
-Must preserve:
-${brief.mustPreserve?.map(x => `- ${x}`).join("\n")}
-
-Avoid:
-${brief.negativePrompt}
-`;
-
-    const video = await openai.videos.create({
-      model: "sora-2",
-      prompt: videoPrompt,
-      size: "1280x720",
-      seconds: "8"
-    });
-
-    res.json({
-      ok: true,
-      brief,
-      video
-    });
-  } catch (error) {
-    console.error("Video error:", error);
-    res.status(500).json({
-      error: "Video failed.",
-      detail: error.message
-    });
-  }
-});
-
-app.get("/api/video/:id", async (req, res) => {
-  try {
-    const video = await openai.videos.retrieve(req.params.id);
-
-    res.json({
-      ok: true,
-      video
-    });
-  } catch (error) {
-    console.error("Video status error:", error);
-    res.status(500).json({
-      error: "Could not get video status.",
-      detail: error.message
-    });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`thedoss server running on port ${PORT}`);
-  console.log("Architectural Director brain active.");
-});npm start
-<link rel="icon" href="/favicon.ico" />
-
-<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-
-<link rel="manifest" href="/site.webmanifest" />
-
-<meta name="theme-color" content="#000000" />
