@@ -237,6 +237,28 @@ app.get("/api/video/:id", async (req, res) => {
   }
 });
 
+app.get("/api/video/:id/content", async (req, res) => {
+  try {
+    const openaiResponse = await fetch("https://api.openai.com/v1/videos/" + req.params.id + "/content", {
+      headers: {
+        Authorization: "Bearer " + process.env.OPENAI_API_KEY
+      }
+    });
+
+    if (!openaiResponse.ok) {
+      return res.status(500).json({ error: "Could not fetch video content." });
+    }
+
+    res.setHeader("Content-Type", "video/mp4");
+    const buffer = Buffer.from(await openaiResponse.arrayBuffer());
+    res.send(buffer);
+  } catch (error) {
+    console.error("Video content error:", error);
+    res.status(500).json({ error: "Could not fetch video content.", detail: error.message });
+  }
+});
+
+
 app.listen(PORT, () => {
   console.log("thedoss server running on port " + PORT);
   console.log("Architectural Director brain active.");
