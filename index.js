@@ -155,8 +155,8 @@ app.post("/api/render", async (req, res) => {
         {
           type: "image_generation",
           quality: quality || "high",
-          size: size || "1536x1024",
-          input_fidelity: imageBase64 ? "high" : "low"
+          size: size || "1536x1024"
+          
         }
       ]
     });
