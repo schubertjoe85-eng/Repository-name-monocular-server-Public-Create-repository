@@ -249,9 +249,29 @@ app.get("/api/video/:id/content", async (req, res) => {
       return res.status(500).json({ error: "Could not fetch video content." });
     }
 
-    res.setHeader("Content-Type", "video/mp4");
     const buffer = Buffer.from(await openaiResponse.arrayBuffer());
-    res.send(buffer);
+    const total = buffer.length;
+    const range = req.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+      const chunk = buffer.slice(start, end + 1);
+      res.writeHead(206, {
+        "Content-Range": "bytes " + start + "-" + end + "/" + total,
+        "Accept-Ranges": "bytes",
+        "Content-Length": chunk.length,
+        "Content-Type": "video/mp4"
+      });
+      res.end(chunk);
+    } else {
+      res.writeHead(200, {
+        "Content-Length": total,
+        "Accept-Ranges": "bytes",
+        "Content-Type": "video/mp4"
+      });
+      res.end(buffer);
+    }
   } catch (error) {
     console.error("Video content error:", error);
     res.status(500).json({ error: "Could not fetch video content.", detail: error.message });
