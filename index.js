@@ -135,32 +135,47 @@ app.post("/api/render", async (req, res) => {
 
     const finalPrompt = buildFinalImagePrompt(brief);
 
-    const response = await openai.responses.create({
-      model: "gpt-5.5",
-      input: [
-        {
-          role: "user",
-          content: [
-            { type: "input_text", text: finalPrompt },
-            ...(imageBase64
-              ? [{
-                  type: "input_image",
-                  image_url: imageBase64.startsWith("data:")
-                    ? imageBase64
-                    : "data:image/png;base64," + imageBase64
-                }]
-              : [])
-          ]
-        }
-      ],
-      tools: [
-        {
-          type: "image_generation",
-          quality: quality || "high",
-          size: size || "1536x1024"
-        }
-      ]
-    });
+    const inputPayload = [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: finalPrompt },
+          ...(imageBase64
+            ? [{
+                type: "input_image",
+                image_url: imageBase64.startsWith("data:")
+                  ? imageBase64
+                  : "data:image/png;base64," + imageBase64
+              }]
+            : [])
+        ]
+      }
+    ];
+
+    const baseTool = {
+      type: "image_generation",
+      quality: quality || "high",
+      size: size || "1536x1024"
+    };
+
+    let response;
+    try {
+      const tool = imageBase64
+        ? Object.assign({}, baseTool, { input_fidelity: "high" })
+        : baseTool;
+      response = await openai.responses.create({
+        model: "gpt-5.5",
+        input: inputPayload,
+        tools: [tool]
+      });
+    } catch (err) {
+      console.error("High-fidelity render failed, retrying standard:", err.message);
+      response = await openai.responses.create({
+        model: "gpt-5.5",
+        input: inputPayload,
+        tools: [baseTool]
+      });
+    }
 
     const imageCall = response.output.find(function(item) {
       return item.type === "image_generation_call";
