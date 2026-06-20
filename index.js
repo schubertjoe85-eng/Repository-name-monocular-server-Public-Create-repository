@@ -15,6 +15,8 @@ const openai = new OpenAI({
 
 const PORT = process.env.PORT || 3000;
 
+let videoCache = { id: null, buffer: null };
+
 let projectMemory = {
   appName: "thedoss",
   buildingType: "",
@@ -239,17 +241,22 @@ app.get("/api/video/:id", async (req, res) => {
 
 app.get("/api/video/:id/content", async (req, res) => {
   try {
-    const openaiResponse = await fetch("https://api.openai.com/v1/videos/" + req.params.id + "/content", {
-      headers: {
-        Authorization: "Bearer " + process.env.OPENAI_API_KEY
-      }
-    });
+    const id = req.params.id;
+    if (videoCache.id !== id || !videoCache.buffer) {
+      const openaiResponse = await fetch("https://api.openai.com/v1/videos/" + id + "/content", {
+        headers: {
+          Authorization: "Bearer " + process.env.OPENAI_API_KEY
+        }
+      });
 
-    if (!openaiResponse.ok) {
-      return res.status(500).json({ error: "Could not fetch video content." });
+      if (!openaiResponse.ok) {
+        return res.status(500).json({ error: "Could not fetch video content." });
+      }
+
+      videoCache = { id: id, buffer: Buffer.from(await openaiResponse.arrayBuffer()) };
     }
 
-    const buffer = Buffer.from(await openaiResponse.arrayBuffer());
+    const buffer = videoCache.buffer;
     const total = buffer.length;
     const range = req.headers.range;
     if (range) {
