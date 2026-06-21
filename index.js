@@ -53,7 +53,7 @@ function safeJsonParse(text) {
   }
 }
 
-async function buildBrain({ userPrompt, renderMode = "image", uploadedImageBase64 }) {
+async function buildBrain({ userPrompt, renderMode = "image", uploadedImageBase64, uploadedImages }) {
   const content = [
     {
       type: "input_text",
@@ -61,12 +61,13 @@ async function buildBrain({ userPrompt, renderMode = "image", uploadedImageBase6
     }
   ];
 
-  if (uploadedImageBase64) {
+  const brainImages = (Array.isArray(uploadedImages) && uploadedImages.length)
+    ? uploadedImages
+    : (uploadedImageBase64 ? [uploadedImageBase64] : []);
+  for (const img of brainImages) {
     content.push({
       type: "input_image",
-      image_url: uploadedImageBase64.startsWith("data:")
-        ? uploadedImageBase64
-        : "data:image/png;base64," + uploadedImageBase64
+      image_url: img.startsWith("data:") ? img : "data:image/png;base64," + img
     });
   }
 
@@ -191,7 +192,8 @@ app.post("/api/render", async (req, res) => {
 
 app.post("/api/video", async (req, res) => {
   try {
-    const { prompt, imageBase64, seconds, size } = req.body;
+    const { prompt, imageBase64, images, seconds, size } = req.body;
+    const imageList = (Array.isArray(images) && images.length) ? images : (imageBase64 ? [imageBase64] : []);
     if (!prompt) {
       return res.status(400).json({ error: "Missing prompt." });
     }
@@ -199,7 +201,7 @@ app.post("/api/video", async (req, res) => {
     const brief = await buildBrain({
       userPrompt: prompt,
       renderMode: "video",
-      uploadedImageBase64: imageBase64
+      uploadedImages: imageList
     });
 
     const preserveList = (brief.mustPreserve || []).map(function(x) { return "- " + x; }).join("\n");
@@ -207,11 +209,12 @@ app.post("/api/video", async (req, res) => {
     const videoPrompt = "Create an architectural video for thedoss.\n\nScene:\n" + brief.cleanPrompt + "\n\nCamera:\nSlow cinematic architectural dolly/orbit.\nStable lens.\nNo warping.\nNo melting.\nNo changing the building shape.\n\nMaterials:\n" + brief.materials + "\n\nSite:\n" + brief.siteContext + "\n\nLighting:\n" + brief.lighting + "\n\nMust preserve:\n" + preserveList + "\n\nAvoid:\n" + brief.negativePrompt;
 
     let referenceBlob = null;
-    if (imageBase64) {
+    const anchorImage = imageList[0] || null;
+    if (anchorImage) {
       try {
-        const raw = imageBase64.startsWith("data:")
-          ? imageBase64.split(",")[1]
-          : imageBase64;
+        const raw = anchorImage.startsWith("data:")
+          ? anchorImage.split(",")[1]
+          : anchorImage;
         const inputBuffer = Buffer.from(raw, "base64");
         const image = await Jimp.read(inputBuffer);
         image.contain(1280, 720);
