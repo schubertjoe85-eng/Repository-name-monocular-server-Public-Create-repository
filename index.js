@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
+import Jimp from "jimp";
 
 dotenv.config();
 
@@ -205,11 +206,29 @@ app.post("/api/video", async (req, res) => {
 
     const videoPrompt = "Create an architectural video for thedoss.\n\nScene:\n" + brief.cleanPrompt + "\n\nCamera:\nSlow cinematic architectural dolly/orbit.\nStable lens.\nNo warping.\nNo melting.\nNo changing the building shape.\n\nMaterials:\n" + brief.materials + "\n\nSite:\n" + brief.siteContext + "\n\nLighting:\n" + brief.lighting + "\n\nMust preserve:\n" + preserveList + "\n\nAvoid:\n" + brief.negativePrompt;
 
+    let referenceBlob = null;
+    if (imageBase64) {
+      try {
+        const raw = imageBase64.startsWith("data:")
+          ? imageBase64.split(",")[1]
+          : imageBase64;
+        const inputBuffer = Buffer.from(raw, "base64");
+        const image = await Jimp.read(inputBuffer);
+        image.contain(1280, 720);
+        const outBuffer = await image.getBufferAsync(Jimp.MIME_JPEG);
+        referenceBlob = new Blob([outBuffer], { type: "image/jpeg" });
+      } catch (imgErr) {
+      }
+    }
+
     const form = new FormData();
     form.append("model", "sora-2");
     form.append("prompt", videoPrompt);
-    form.append("size", size || "1280x720");
+    form.append("size", "1280x720");
     form.append("seconds", seconds || "8");
+    if (referenceBlob) {
+      form.append("input_reference", referenceBlob, "reference.jpg");
+    }
 
     const openaiResponse = await fetch("https://api.openai.com/v1/videos", {
       method: "POST",

@@ -4,13 +4,12 @@
   "type": "module",
   "scripts": {
     "start": "node index.js"
-
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.19.2",
-   "openai": "^5.0.0"
-
+    "jimp": "^0.22.12",
+    "openai": "^5.0.0"
   }
 }
