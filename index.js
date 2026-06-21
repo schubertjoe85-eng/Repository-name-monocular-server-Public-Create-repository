@@ -209,7 +209,20 @@ app.post("/api/video", async (req, res) => {
     const videoPrompt = "Create an architectural video for thedoss.\n\nScene:\n" + brief.cleanPrompt + "\n\nCamera:\nSlow cinematic architectural dolly/orbit.\nStable lens.\nNo warping.\nNo melting.\nNo changing the building shape.\n\nMaterials:\n" + brief.materials + "\n\nSite:\n" + brief.siteContext + "\n\nLighting:\n" + brief.lighting + "\n\nMust preserve:\n" + preserveList + "\n\nAvoid:\n" + brief.negativePrompt;
 
     let referenceBlob = null;
-    const anchorImage = imageList[0] || null;
+    let renderedAnchor = null;
+    try {
+      const fp = buildFinalImagePrompt(brief);
+      const src = imageList[0] || null;
+      const rContent = [{ type: "input_text", text: fp }];
+      if (src) rContent.push({ type: "input_image", image_url: src.startsWith("data:") ? src : "data:image/png;base64," + src });
+      const rTool = { type: "image_generation", quality: "high", size: "1536x1024" };
+      const rResp = await openai.responses.create({ model: "gpt-5.5", input: [{ role: "user", content: rContent }], tools: [src ? Object.assign({}, rTool, { input_fidelity: "high" }) : rTool] });
+      const rCall = rResp.output.find(function(i) { return i.type === "image_generation_call"; });
+      if (rCall && rCall.result) renderedAnchor = "data:image/png;base64," + rCall.result;
+    } catch (e) {
+      console.error("Pre-video render failed:", e.message);
+    }
+    const anchorImage = renderedAnchor || imageList[0] || null;
     if (anchorImage) {
       try {
         const raw = anchorImage.startsWith("data:")
