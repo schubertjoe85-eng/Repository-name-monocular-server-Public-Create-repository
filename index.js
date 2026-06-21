@@ -155,7 +155,7 @@ app.post("/api/render", async (req, res) => {
     const baseTool = {
       type: "image_generation",
       quality: quality || "high",
-      size: size || "1536x1024"
+      size: "1024x1024"
     };
 
     let response;
