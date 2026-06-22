@@ -194,8 +194,13 @@ app.post("/api/render-v2", async (req, res) => {
   try {
     const { prompt, imageBase64, imageUrl, controlScale, preprocess } = req.body;
     if (!prompt) return res.status(400).json({ error: "Missing prompt." });
-    const brief = await buildBrain({ userPrompt: prompt, renderMode: "image", uploadedImageBase64: imageBase64 });
-    const finalPrompt = buildFinalImagePrompt(brief);
+    let finalPrompt = prompt;
+    try {
+      const brief = await buildBrain({ userPrompt: prompt, renderMode: "image", uploadedImageBase64: imageBase64 });
+      finalPrompt = buildFinalImagePrompt(brief);
+    } catch (brainErr) {
+      console.error("Brain unavailable, using raw prompt:", brainErr.message);
+    }
     let ctrl = imageUrl || null;
     if (!ctrl && imageBase64) ctrl = imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64;
     if (!ctrl) return res.status(400).json({ error: "Missing image." });
@@ -207,7 +212,7 @@ app.post("/api/render-v2", async (req, res) => {
     const data = await falRes.json();
     if (!falRes.ok) { console.error("Fal error:", data); return res.status(500).json({ error: "Fal render failed.", detail: JSON.stringify(data) }); }
     const outUrl = data.images && data.images[0] ? data.images[0].url : null;
-    res.json({ ok: true, brief, imageUrl: outUrl });
+    res.json({ ok: true, imageUrl: outUrl });
   } catch (error) {
     console.error("Render-v2 error:", error);
     res.status(500).json({ error: "Render-v2 failed.", detail: error.message });
