@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import Jimp from "jimp";
+import { CONTROL_CONFIG, buildWishImagePrompt } from "./renderDirector.js";
 
 dotenv.config();
 
@@ -197,7 +198,7 @@ app.post("/api/render-v2", async (req, res) => {
     let finalPrompt = prompt;
     try {
       const brief = await buildBrain({ userPrompt: prompt, renderMode: "image", uploadedImageBase64: imageBase64 });
-      finalPrompt = buildFinalImagePrompt(brief);
+      finalPrompt = buildWishImagePrompt(brief);
     } catch (brainErr) {
       console.error("Brain unavailable, using raw prompt:", brainErr.message);
     }
@@ -207,7 +208,7 @@ app.post("/api/render-v2", async (req, res) => {
     const falRes = await fetch("https://fal.run/fal-ai/z-image/turbo/controlnet", {
       method: "POST",
       headers: { Authorization: "Key " + process.env.FAL_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: finalPrompt, image_url: ctrl, preprocess: preprocess || "canny", control_scale: typeof controlScale === "number" ? controlScale : 0.75, control_end: 0.8, output_format: "png", image_size: "square_hd" })
+      body: JSON.stringify(Object.assign({ prompt: finalPrompt, image_url: ctrl }, CONTROL_CONFIG, { preprocess: preprocess || CONTROL_CONFIG.preprocess, control_scale: typeof controlScale === "number" ? controlScale : CONTROL_CONFIG.control_scale }))
     });
     const data = await falRes.json();
     if (!falRes.ok) { console.error("Fal error:", data); return res.status(500).json({ error: "Fal render failed.", detail: JSON.stringify(data) }); }
