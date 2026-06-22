@@ -125,66 +125,24 @@ app.post("/api/brain", async (req, res) => {
 
 app.post("/api/render", async (req, res) => {
   try {
-    const { prompt, imageBase64, quality, size } = req.body;
-    if (!prompt) {
-      return res.status(400).json({ error: "Missing prompt." });
-    }
-
-    const brief = await buildBrain({
-      userPrompt: prompt,
-      renderMode: "image",
-      uploadedImageBase64: imageBase64
+    const { prompt, imageBase64 } = req.body;
+    if (!prompt) return res.status(400).json({ error: "Missing prompt." });
+    if (!imageBase64) return res.status(400).json({ error: "Please upload an image to render." });
+    const finalPrompt = prompt + ". Photorealistic architectural visualization, faithful to the supplied structure. Natural daylight, honest materials, physically correct light. Do not add, move, or invent windows, doors, rooflines, or structural elements.";
+    const ctrl = imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64;
+    const falRes = await fetch("https://fal.run/fal-ai/z-image/turbo/controlnet", {
+      method: "POST",
+      headers: { Authorization: "Key " + process.env.FAL_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign({ prompt: finalPrompt, image_url: ctrl }, CONTROL_CONFIG))
     });
-
-    const finalPrompt = buildFinalImagePrompt(brief);
-
-    const inputPayload = [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: finalPrompt },
-          ...(imageBase64
-            ? [{
-                type: "input_image",
-                image_url: imageBase64.startsWith("data:")
-                  ? imageBase64
-                  : "data:image/png;base64," + imageBase64
-              }]
-            : [])
-        ]
-      }
-    ];
-
-    const baseTool = {
-      type: "image_generation",
-      quality: quality || "high",
-      size: "1024x1024"
-    };
-
-    let response;
-    try {
-      const tool = imageBase64
-        ? Object.assign({}, baseTool, { input_fidelity: "high" })
-        : baseTool;
-      response = await openai.responses.create({
-        model: "gpt-5.5",
-        input: inputPayload,
-        tools: [tool]
-      });
-    } catch (err) {
-      console.error("High-fidelity render failed, retrying standard:", err.message);
-      response = await openai.responses.create({
-        model: "gpt-5.5",
-        input: inputPayload,
-        tools: [baseTool]
-      });
-    }
-
-    const imageCall = response.output.find(function(item) {
-      return item.type === "image_generation_call";
-    });
-
-    res.json({ ok: true, brief, imageBase64: imageCall ? imageCall.result : null });
+    const data = await falRes.json();
+    if (!falRes.ok) { console.error("Fal error:", data); return res.status(500).json({ error: "Render failed.", detail: JSON.stringify(data) }); }
+    const outUrl = data.images && data.images[0] ? data.images[0].url : null;
+    if (!outUrl) return res.status(500).json({ error: "No image returned." });
+    const imgResp = await fetch(outUrl);
+    const arrBuf = await imgResp.arrayBuffer();
+    const b64 = Buffer.from(arrBuf).toString("base64");
+    res.json({ ok: true, imageBase64: b64 });
   } catch (error) {
     console.error("Render error:", error);
     res.status(500).json({ error: "Render failed.", detail: error.message });
