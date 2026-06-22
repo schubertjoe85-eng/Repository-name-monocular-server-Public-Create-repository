@@ -190,6 +190,30 @@ app.post("/api/render", async (req, res) => {
   }
 });
 
+app.post("/api/render-v2", async (req, res) => {
+  try {
+    const { prompt, imageBase64, imageUrl, controlScale, preprocess } = req.body;
+    if (!prompt) return res.status(400).json({ error: "Missing prompt." });
+    const brief = await buildBrain({ userPrompt: prompt, renderMode: "image", uploadedImageBase64: imageBase64 });
+    const finalPrompt = buildFinalImagePrompt(brief);
+    let ctrl = imageUrl || null;
+    if (!ctrl && imageBase64) ctrl = imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64;
+    if (!ctrl) return res.status(400).json({ error: "Missing image." });
+    const falRes = await fetch("https://fal.run/fal-ai/z-image/turbo/controlnet", {
+      method: "POST",
+      headers: { Authorization: "Key " + process.env.FAL_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: finalPrompt, image_url: ctrl, preprocess: preprocess || "canny", control_scale: typeof controlScale === "number" ? controlScale : 0.75, control_end: 0.8, output_format: "png", image_size: "square_hd" })
+    });
+    const data = await falRes.json();
+    if (!falRes.ok) { console.error("Fal error:", data); return res.status(500).json({ error: "Fal render failed.", detail: JSON.stringify(data) }); }
+    const outUrl = data.images && data.images[0] ? data.images[0].url : null;
+    res.json({ ok: true, brief, imageUrl: outUrl });
+  } catch (error) {
+    console.error("Render-v2 error:", error);
+    res.status(500).json({ error: "Render-v2 failed.", detail: error.message });
+  }
+});
+
 app.post("/api/video", async (req, res) => {
   try {
     const { prompt, imageBase64, images, seconds, size } = req.body;
