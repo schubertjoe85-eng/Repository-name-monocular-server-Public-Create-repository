@@ -70,9 +70,9 @@ export const CONTROL_CONFIG = {
   // "canny" for line drawings / sketches (sharp edges = clean structure lock).
   // "depth" tends to read better for photos or massing models.
   preprocess: "canny",
-  control_scale: 0.85,     // strict. lower toward 0.7 only if it feels stiff.
+  control_scale: 0.95,     // strict. lower toward 0.7 only if it feels stiff.
   control_start: 0.0,
-  control_end: 0.85,       // hold structure late; let only ~15% be free.
+  control_end: 1.0,       // hold structure late; let only ~15% be free.
   num_inference_steps: 8,
   image_size: "square_hd",
   output_format: "png",
