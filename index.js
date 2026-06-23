@@ -128,7 +128,7 @@ app.post("/api/render", async (req, res) => {
     const { prompt, imageBase64 } = req.body;
     if (!prompt) return res.status(400).json({ error: "Missing prompt." });
     if (!imageBase64) return res.status(400).json({ error: "Please upload an image to render." });
-    let finalPrompt = prompt + ". Photorealistic architectural visualization, faithful to the supplied structure. Natural daylight, honest materials, physically correct light. Do not add, move, or invent windows, doors, rooflines, or structural elements.";
+    let finalPrompt = prompt + ". Photorealistic render of THIS exact building. Preserve its architectural style, era, ornament, materials and detailing exactly as shown. Do NOT modernize, simplify, or restyle. Keep all structure, proportions, rooflines and openings identical. Add only realistic light and surroundings.";
     // brain bypassed for image path: honour the image directly, no paraphrase
     const ctrl = imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64;
     const falRes = await fetch("https://fal.run/fal-ai/z-image/turbo/controlnet", {

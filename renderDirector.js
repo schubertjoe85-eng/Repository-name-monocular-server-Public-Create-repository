@@ -69,8 +69,8 @@ Return ONLY valid JSON, no prose around it, with exactly these keys:
 export const CONTROL_CONFIG = {
   // "canny" for line drawings / sketches (sharp edges = clean structure lock).
   // "depth" tends to read better for photos or massing models.
-  preprocess: "depth",
-  control_scale: 0.9,     // strict. lower toward 0.7 only if it feels stiff.
+  preprocess: "canny",
+  control_scale: 0.95,     // strict. lower toward 0.7 only if it feels stiff.
   control_start: 0.0,
   control_end: 0.99,       // hold structure late; let only ~15% be free.
   num_inference_steps: 8,
