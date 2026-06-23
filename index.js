@@ -125,16 +125,23 @@ app.post("/api/brain", async (req, res) => {
 
 app.post("/api/render", async (req, res) => {
   try {
-    const { prompt, imageBase64 } = req.body;
+    const { prompt, imageBase64, mode, preprocess, control_scale } = req.body;
     if (!prompt) return res.status(400).json({ error: "Missing prompt." });
     if (!imageBase64) return res.status(400).json({ error: "Please upload an image to render." });
-    let finalPrompt = prompt + ". Photorealistic render of THIS exact building. Preserve its architectural style, era, ornament, materials and detailing exactly as shown. Do NOT modernize, simplify, or restyle. Keep all structure, proportions, rooflines and openings identical. Add only realistic light and surroundings.";
-    // brain bypassed for image path: honour the image directly, no paraphrase
+    const presets = {
+      sketch: { preprocess: "canny", control_scale: 0.7 },
+      model:  { preprocess: "depth", control_scale: 0.7 },
+      photo:  { preprocess: "canny", control_scale: 0.85 }
+    };
+    const preset = presets[mode] || presets.sketch;
+    const pp = preprocess || preset.preprocess;
+    const cs = (typeof control_scale === "number") ? control_scale : preset.control_scale;
+    const finalPrompt = prompt + ". Photorealistic, real materials and light. Preserve the building exactly: its design, era, proportions, rooflines, openings and detailing. Do not modernize, restyle, or simplify.";
     const ctrl = imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64;
     const falRes = await fetch("https://fal.run/fal-ai/z-image/turbo/controlnet", {
       method: "POST",
       headers: { Authorization: "Key " + process.env.FAL_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify(Object.assign({ prompt: finalPrompt, image_url: ctrl }, CONTROL_CONFIG))
+      body: JSON.stringify({ prompt: finalPrompt, image_url: ctrl, preprocess: pp, control_scale: cs, control_end: 0.95, num_inference_steps: 8, image_size: "square_hd", output_format: "png" })
     });
     const data = await falRes.json();
     if (!falRes.ok) { console.error("Fal error:", data); return res.status(500).json({ error: "Render failed.", detail: JSON.stringify(data) }); }
@@ -143,7 +150,7 @@ app.post("/api/render", async (req, res) => {
     const imgResp = await fetch(outUrl);
     const arrBuf = await imgResp.arrayBuffer();
     const b64 = Buffer.from(arrBuf).toString("base64");
-    res.json({ ok: true, imageBase64: b64 });
+    res.json({ ok: true, imageBase64: b64, used: { mode: mode || "sketch", preprocess: pp, control_scale: cs } });
   } catch (error) {
     console.error("Render error:", error);
     res.status(500).json({ error: "Render failed.", detail: error.message });
