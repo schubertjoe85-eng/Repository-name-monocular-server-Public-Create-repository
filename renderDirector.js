@@ -72,7 +72,7 @@ export const CONTROL_CONFIG = {
   preprocess: "depth",
   control_scale: 0.9,     // strict. lower toward 0.7 only if it feels stiff.
   control_start: 0.0,
-  control_end: 1.0,       // hold structure late; let only ~15% be free.
+  control_end: 0.99,       // hold structure late; let only ~15% be free.
   num_inference_steps: 8,
   image_size: "square_hd",
   output_format: "png",
