@@ -102,7 +102,7 @@ export function buildWishImagePrompt(brief) {
     .join("\n");
 
   return [
-    "Architectural visualization, faithful to the supplied drawing.",
+    "Photorealistic render of the EXACT building in the source image. Reproduce it faithfully — add only realistic materials, light and surroundings. Do not redesign, restyle, reinterpret, or add features. Keep all structure, proportions, rooflines and openings identical to the source.",
     "",
     "The building, exactly as drawn:",
     brief.cleanPrompt,
