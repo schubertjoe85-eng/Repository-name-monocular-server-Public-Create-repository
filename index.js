@@ -136,7 +136,7 @@ app.post("/api/render", async (req, res) => {
     const preset = presets[mode] || presets.sketch;
     const pp = preprocess || preset.preprocess;
     const cs = (typeof control_scale === "number") ? control_scale : preset.control_scale;
-    const finalPrompt = prompt + ". Photorealistic, real materials and light. Preserve the building exactly: its design, era, proportions, rooflines, openings and detailing. Do not modernize, restyle, or simplify.";
+    const finalPrompt = prompt + ". Photorealistic architectural photograph of this exact structure as drawn. Neutral real-world materials and daylight. No added style, no historical ornament, no decoration not present in the source. Render only what is shown.";
     const ctrl = imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64;
     const falRes = await fetch("https://fal.run/fal-ai/z-image/turbo/controlnet", {
       method: "POST",
