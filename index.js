@@ -177,76 +177,21 @@ app.post("/api/render-v2", async (req, res) => {
 
 app.post("/api/video", async (req, res) => {
   try {
-    const { prompt, imageBase64, images, seconds, size } = req.body;
+    const { prompt, imageBase64, images } = req.body;
     const imageList = (Array.isArray(images) && images.length) ? images : (imageBase64 ? [imageBase64] : []);
-    if (!prompt) {
-      return res.status(400).json({ error: "Missing prompt." });
-    }
-
-    const brief = await buildBrain({
-      userPrompt: prompt,
-      renderMode: "video",
-      uploadedImages: imageList
-    });
-
-    const preserveList = (brief.mustPreserve || []).map(function(x) { return "- " + x; }).join("\n");
-
-    const videoPrompt = "Create an architectural video for thedoss.\n\nScene:\n" + brief.cleanPrompt + "\n\nCamera:\nSlow cinematic architectural dolly/orbit.\nStable lens.\nNo warping.\nNo melting.\nNo changing the building shape.\n\nMaterials:\n" + brief.materials + "\n\nSite:\n" + brief.siteContext + "\n\nLighting:\n" + brief.lighting + "\n\nMust preserve:\n" + preserveList + "\n\nAvoid:\n" + brief.negativePrompt;
-
-    let referenceBlob = null;
-    let renderedAnchor = null;
-    try {
-      const fp = buildFinalImagePrompt(brief);
-      const src = imageList[0] || null;
-      const rContent = [{ type: "input_text", text: fp }];
-      if (src) rContent.push({ type: "input_image", image_url: src.startsWith("data:") ? src : "data:image/png;base64," + src });
-      const rTool = { type: "image_generation", quality: "high", size: "1536x1024" };
-      const rResp = await openai.responses.create({ model: "gpt-5.5", input: [{ role: "user", content: rContent }], tools: [src ? Object.assign({}, rTool, { input_fidelity: "high" }) : rTool] });
-      const rCall = rResp.output.find(function(i) { return i.type === "image_generation_call"; });
-      if (rCall && rCall.result) renderedAnchor = "data:image/png;base64," + rCall.result;
-    } catch (e) {
-      console.error("Pre-video render failed:", e.message);
-    }
-    const anchorImage = renderedAnchor || imageList[0] || null;
-    if (anchorImage) {
-      try {
-        const raw = anchorImage.startsWith("data:")
-          ? anchorImage.split(",")[1]
-          : anchorImage;
-        const inputBuffer = Buffer.from(raw, "base64");
-        const image = await Jimp.read(inputBuffer);
-        image.contain(1280, 720);
-        const outBuffer = await image.getBufferAsync(Jimp.MIME_JPEG);
-        referenceBlob = new Blob([outBuffer], { type: "image/jpeg" });
-      } catch (imgErr) {
-      }
-    }
-
-    const form = new FormData();
-    form.append("model", "sora-2");
-    form.append("prompt", videoPrompt);
-    form.append("size", "1280x720");
-    form.append("seconds", seconds || "8");
-    if (referenceBlob) {
-      form.append("input_reference", referenceBlob, "reference.jpg");
-    }
-
-    const openaiResponse = await fetch("https://api.openai.com/v1/videos", {
+    if (!prompt) return res.status(400).json({ error: "Missing prompt." });
+    if (!imageList.length) return res.status(400).json({ error: "Please upload an image." });
+    const src = imageList[0];
+    const imageUrl = src.startsWith("data:") ? src : "data:image/png;base64," + src;
+    const motion = prompt + ". Keep the building structure unchanged; realistic cinematic motion.";
+    const r = await fetch("https://queue.fal.run/fal-ai/wan-i2v", {
       method: "POST",
-      headers: {
-        Authorization: "Bearer " + process.env.OPENAI_API_KEY
-      },
-      body: form
+      headers: { Authorization: "Key " + process.env.FAL_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: motion, image_url: imageUrl, resolution: "480p" })
     });
-
-    const video = await openaiResponse.json();
-
-    if (!openaiResponse.ok) {
-      console.error("Video error:", video);
-      return res.status(500).json({ error: "Video failed.", detail: video.error ? video.error.message : JSON.stringify(video) });
-    }
-
-    res.json({ ok: true, brief, video });
+    const data = await r.json();
+    if (!r.ok || !data.request_id) { console.error("Wan submit error:", data); return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) }); }
+    res.json({ ok: true, video: { id: data.request_id } });
   } catch (error) {
     console.error("Video error:", error);
     res.status(500).json({ error: "Video failed.", detail: error.message });
@@ -255,22 +200,14 @@ app.post("/api/video", async (req, res) => {
 
 app.get("/api/video/:id", async (req, res) => {
   try {
-    const openaiResponse = await fetch("https://api.openai.com/v1/videos/" + req.params.id, {
-      headers: {
-        Authorization: "Bearer " + process.env.OPENAI_API_KEY
-      }
+    const r = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + req.params.id + "/status", {
+      headers: { Authorization: "Key " + process.env.FAL_KEY }
     });
-
-    const video = await openaiResponse.json();
-
-    if (!openaiResponse.ok) {
-      return res.status(500).json({ error: "Could not get video status.", detail: video.error ? video.error.message : JSON.stringify(video) });
-    }
-
-    res.json({ ok: true, video });
+    const data = await r.json();
+    const done = data.status === "COMPLETED";
+    res.json({ ok: true, video: { status: done ? "completed" : "in_progress" } });
   } catch (error) {
-    console.error("Video status error:", error);
-    res.status(500).json({ error: "Could not get video status.", detail: error.message });
+    res.status(500).json({ error: "Status failed.", detail: error.message });
   }
 });
 
@@ -278,19 +215,15 @@ app.get("/api/video/:id/content", async (req, res) => {
   try {
     const id = req.params.id;
     if (videoCache.id !== id || !videoCache.buffer) {
-      const openaiResponse = await fetch("https://api.openai.com/v1/videos/" + id + "/content", {
-        headers: {
-          Authorization: "Bearer " + process.env.OPENAI_API_KEY
-        }
+      const rr = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + id, {
+        headers: { Authorization: "Key " + process.env.FAL_KEY }
       });
-
-      if (!openaiResponse.ok) {
-        return res.status(500).json({ error: "Could not fetch video content." });
-      }
-
-      videoCache = { id: id, buffer: Buffer.from(await openaiResponse.arrayBuffer()) };
+      const result = await rr.json();
+      const url = result.video ? result.video.url : null;
+      if (!url) return res.status(500).json({ error: "No video URL." });
+      const vid = await fetch(url);
+      videoCache = { id: id, buffer: Buffer.from(await vid.arrayBuffer()) };
     }
-
     const buffer = videoCache.buffer;
     const total = buffer.length;
     const range = req.headers.range;
@@ -299,27 +232,16 @@ app.get("/api/video/:id/content", async (req, res) => {
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
       const chunk = buffer.slice(start, end + 1);
-      res.writeHead(206, {
-        "Content-Range": "bytes " + start + "-" + end + "/" + total,
-        "Accept-Ranges": "bytes",
-        "Content-Length": chunk.length,
-        "Content-Type": "video/mp4"
-      });
+      res.writeHead(206, { "Content-Range": "bytes " + start + "-" + end + "/" + total, "Accept-Ranges": "bytes", "Content-Length": chunk.length, "Content-Type": "video/mp4" });
       res.end(chunk);
     } else {
-      res.writeHead(200, {
-        "Content-Length": total,
-        "Accept-Ranges": "bytes",
-        "Content-Type": "video/mp4"
-      });
+      res.writeHead(200, { "Content-Length": total, "Accept-Ranges": "bytes", "Content-Type": "video/mp4" });
       res.end(buffer);
     }
   } catch (error) {
-    console.error("Video content error:", error);
-    res.status(500).json({ error: "Could not fetch video content.", detail: error.message });
+    res.status(500).json({ error: "Content failed.", detail: error.message });
   }
 });
-
 
 app.listen(PORT, () => {
   console.log("thedoss server running on port " + PORT);
