@@ -3,7 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import Jimp from "jimp";
-import { CONTROL_CONFIG, buildWishImagePrompt } from "./renderDirector.js";
+import { CONTROL_CONFIG, buildWishImagePrompt, SYSTEM_PROMPT } from "./renderDirector.js";
 
 dotenv.config();
 
@@ -75,7 +75,7 @@ async function buildBrain({ userPrompt, renderMode = "image", uploadedImageBase6
   const response = await openai.responses.create({
     model: "gpt-5.5",
     input: [
-      { role: "system", content: ARCHITECTURAL_DIRECTOR },
+      { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content }
     ]
   });
@@ -128,7 +128,13 @@ app.post("/api/render", async (req, res) => {
     const { prompt, imageBase64 } = req.body;
     if (!prompt) return res.status(400).json({ error: "Missing prompt." });
     if (!imageBase64) return res.status(400).json({ error: "Please upload an image to render." });
-    const finalPrompt = prompt + ". Photorealistic architectural visualization, faithful to the supplied structure. Natural daylight, honest materials, physically correct light. Do not add, move, or invent windows, doors, rooflines, or structural elements.";
+    let finalPrompt = prompt + ". Photorealistic architectural visualization, faithful to the supplied structure. Natural daylight, honest materials, physically correct light. Do not add, move, or invent windows, doors, rooflines, or structural elements.";
+    try {
+      const brief = await buildBrain({ userPrompt: prompt, renderMode: "image", uploadedImageBase64: imageBase64 });
+      finalPrompt = buildWishImagePrompt(brief);
+    } catch (brainErr) {
+      console.error("Brain unavailable, using simple prompt:", brainErr.message);
+    }
     const ctrl = imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64;
     const falRes = await fetch("https://fal.run/fal-ai/z-image/turbo/controlnet", {
       method: "POST",
