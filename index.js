@@ -213,33 +213,29 @@ app.get("/api/video/:id", async (req, res) => {
 
 app.get("/api/video/:id/content", async (req, res) => {
   try {
-    const id = req.params.id;
-    if (videoCache.id !== id || !videoCache.buffer) {
-      const rr = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + id, {
-        headers: { Authorization: "Key " + process.env.FAL_KEY }
-      });
-      const result = await rr.json();
-      const url = result.video ? result.video.url : null;
-      if (!url) return res.status(500).json({ error: "No video URL." });
-      const vid = await fetch(url);
-      videoCache = { id: id, buffer: Buffer.from(await vid.arrayBuffer()) };
-    }
-    const buffer = videoCache.buffer;
-    const total = buffer.length;
-    const range = req.headers.range;
-    if (range) {
-      const parts = range.replace(/bytes=/, "").split("-");
-      const start = parseInt(parts[0], 10);
-      const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
-      const chunk = buffer.slice(start, end + 1);
-      res.writeHead(206, { "Content-Range": "bytes " + start + "-" + end + "/" + total, "Accept-Ranges": "bytes", "Content-Length": chunk.length, "Content-Type": "video/mp4" });
-      res.end(chunk);
-    } else {
-      res.writeHead(200, { "Content-Length": total, "Accept-Ranges": "bytes", "Content-Type": "video/mp4" });
-      res.end(buffer);
-    }
+    const rr = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + req.params.id, {
+      headers: { Authorization: "Key " + process.env.FAL_KEY }
+    });
+    const result = await rr.json();
+    const url = result.video ? result.video.url : null;
+    if (!url) return res.status(404).json({ error: "No video URL yet." });
+    return res.redirect(302, url);
   } catch (error) {
     res.status(500).json({ error: "Content failed.", detail: error.message });
+  }
+});
+
+app.get("/api/video/:id/url", async (req, res) => {
+  try {
+    const rr = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + req.params.id, {
+      headers: { Authorization: "Key " + process.env.FAL_KEY }
+    });
+    const result = await rr.json();
+    const url = result.video ? result.video.url : null;
+    if (!url) return res.status(404).json({ error: "No video URL yet." });
+    res.json({ ok: true, url: url });
+  } catch (error) {
+    res.status(500).json({ error: "URL fetch failed.", detail: error.message });
   }
 });
 
