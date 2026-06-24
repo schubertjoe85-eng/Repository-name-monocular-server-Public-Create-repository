@@ -239,6 +239,11 @@ app.get("/api/video/:id/url", async (req, res) => {
   }
 });
 
+const SELF_URL = "https://monocular-server.onrender.com/health";
+setInterval(function () {
+  fetch(SELF_URL).then(function () {}).catch(function () {});
+}, 600000);
+
 app.listen(PORT, () => {
   console.log("thedoss server running on port " + PORT);
   console.log("Architectural Director brain active.");
