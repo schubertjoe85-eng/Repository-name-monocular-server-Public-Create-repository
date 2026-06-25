@@ -128,22 +128,44 @@ app.post("/api/render", async (req, res) => {
   try {
     const { prompt, imageBase64 } = req.body;
     if (!prompt) return res.status(400).json({ error: "Missing prompt." });
-    const brief = await buildBrain({ userPrompt: prompt, renderMode: "image", uploadedImageBase64: imageBase64 });
-    const finalPrompt = buildFinalImagePrompt(brief);
-    const inputPayload = [{ role: "user", content: [{ type: "input_text", text: finalPrompt }, ...(imageBase64 ? [{ type: "input_image", image_url: imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64 }] : [])] }];
+
+    // Try the brain, but NEVER let it break the render.
+    let finalPrompt = prompt + ". Photorealistic architectural visualization, faithful to the supplied design. Real materials, natural daylight, accurate proportions. Do not redesign, restyle, or invent elements not present.";
+    let brief = null;
+    try {
+      brief = await buildBrain({ userPrompt: prompt, renderMode: "image", uploadedImageBase64: imageBase64 });
+      if (brief && brief.cleanPrompt) {
+        finalPrompt = buildFinalImagePrompt(brief);
+      }
+    } catch (brainErr) {
+      console.error("Brain skipped:", brainErr.message);
+    }
+
+    const inputPayload = [{ role: "user", content: [
+      { type: "input_text", text: finalPrompt },
+      ...(imageBase64 ? [{ type: "input_image", image_url: imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64 }] : [])
+    ] }];
+
     const baseTool = { type: "image_generation", quality: "high", size: "1024x1024" };
+
     let response;
     try {
       const tool = imageBase64 ? Object.assign({}, baseTool, { input_fidelity: "high" }) : baseTool;
       response = await openai.responses.create({ model: "gpt-5.5", input: inputPayload, tools: [tool] });
-    } catch (err) {
+    } catch (genErr) {
+      console.error("Gen retry without fidelity:", genErr.message);
       response = await openai.responses.create({ model: "gpt-5.5", input: inputPayload, tools: [baseTool] });
     }
+
     const imageCall = response.output.find(function(item) { return item.type === "image_generation_call"; });
-    res.json({ ok: true, brief, imageBase64: imageCall ? imageCall.result : null });
+    if (!imageCall || !imageCall.result) {
+      return res.status(500).json({ error: "No image generated. Please try again." });
+    }
+
+    return res.json({ ok: true, brief: brief, imageBase64: imageCall.result });
   } catch (error) {
     console.error("Render error:", error);
-    res.status(500).json({ error: "Render failed.", detail: error.message });
+    return res.status(500).json({ error: "Render failed.", detail: error.message });
   }
 });
 
