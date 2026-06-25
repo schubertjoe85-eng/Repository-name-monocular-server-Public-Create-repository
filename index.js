@@ -74,7 +74,7 @@ async function buildBrain({ userPrompt, renderMode = "image", uploadedImageBase6
 
   const response = await openai.responses.create({
     model: "gpt-5.5",
-    max_output_tokens: 700,
+    max_output_tokens: 1500,
     input: [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "user", content }
