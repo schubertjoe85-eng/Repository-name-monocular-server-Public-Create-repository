@@ -146,7 +146,7 @@ app.post("/api/render", async (req, res) => {
       ...(imageBase64 ? [{ type: "input_image", image_url: imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64 }] : [])
     ] }];
 
-    const baseTool = { type: "image_generation", quality: "high", size: "1024x1024" };
+    const baseTool = { type: "image_generation", quality: "medium", size: "1024x1024" };
 
     let response;
     try {
