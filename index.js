@@ -266,6 +266,43 @@ const SELF_URL = "https://monocular-server.onrender.com/health";
 setInterval(function () {
   fetch(SELF_URL).then(function () {}).catch(function () {});
 }, 600000);
+app.post("/render", async (req, res) => {
+  req.setTimeout(110000);
+  res.setTimeout(110000);
+  try {
+    const { prompt, imageBase64, mode = "render" } = req.body || {};
+    if (!imageBase64) return res.status(400).json({ ok: false, error: "Upload an image first." });
+
+    const isInterior = mode === "interior";
+    const finalPrompt = isInterior
+      ? `INTERIOR ARCHITECTURAL SPACE. This is NOT an exterior building.
+Preserve: room layout, ceiling height, furniture arrangement, window positions.
+Improve: materials, finishes, lighting, shadows, atmosphere, realism.
+Do not redesign the room or add extra spaces.
+User brief: ${prompt || "Create a realistic interior architectural render."}`
+      : `Photorealistic architectural visualisation. Preserve the building design exactly.
+Improve materials, lighting, landscape and realism without redesigning.
+User brief: ${prompt || "Create a realistic architectural render."}`;
+
+    const imageBuffer = Buffer.from(imageBase64, "base64");
+    const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
+
+    const response = await openai.images.edit({
+      model: "gpt-image-1",
+      image: imageFile,
+      prompt: finalPrompt,
+      size: "1024x1024",
+    });
+
+    const imageBase64Out = response?.data?.[0]?.b64_json;
+    if (!imageBase64Out) return res.status(500).json({ ok: false, error: "No image returned." });
+
+    return res.json({ ok: true, image: `data:image/png;base64,${imageBase64Out}` });
+  } catch (error) {
+    console.error("Render error:", error);
+    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
+  }
+});
 
 app.listen(PORT, () => {
   console.log("thedoss server running on port " + PORT);
