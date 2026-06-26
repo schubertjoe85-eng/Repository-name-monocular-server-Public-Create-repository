@@ -18,7 +18,7 @@ const openai = new OpenAI({
 const PORT = process.env.PORT || 3000;
 
 let projectMemory = {
-  appName: "thedoss",
+  appName: "Monocular",
   buildingType: "",
   location: "",
   preferredStyle: "realistic Australian architectural visualisation",
@@ -39,8 +39,6 @@ let projectMemory = {
     "cartoon style unless requested"
   ]
 };
-
-const ARCHITECTURAL_DIRECTOR = "You are the Architectural Director brain for an app called thedoss. Your job is to refine user render requests before image or video generation. Rules: Preserve the uploaded drawing/model/building unless the user clearly asks to change it. Do not invent major design changes. Improve realism, materials, lighting, context and camera. Keep architecture believable and buildable. If the request is vague, make a professional architectural assumption. If a user asks for a wild style, keep the building geometry controlled. Never let the render go rogue. Return ONLY valid JSON with this exact structure: { \"mode\": \"image\", \"cleanPrompt\": \"\", \"negativePrompt\": \"\", \"camera\": \"\", \"materials\": \"\", \"siteContext\": \"\", \"lighting\": \"\", \"mustPreserve\": [], \"warnings\": [] }";
 
 function safeJsonParse(text) {
   try {
@@ -88,7 +86,7 @@ function buildFinalImagePrompt(brief) {
 }
 
 app.get("/", (req, res) => {
-  res.json({ ok: true, app: "thedoss server", brain: "Architectural Director active" });
+  res.json({ ok: true, app: "Monocular Server", status: "running" });
 });
 
 app.get("/health", (req, res) => {
@@ -160,6 +158,7 @@ app.post("/api/render", async (req, res) => {
   }
 });
 
+// Main render route used by the app - supports interior and exterior modes
 app.post("/render", async (req, res) => {
   req.setTimeout(110000);
   res.setTimeout(110000);
@@ -169,7 +168,7 @@ app.post("/render", async (req, res) => {
 
     const isInterior = mode === "interior";
     const finalPrompt = isInterior
-      ? "INTERIOR ARCHITECTURAL SPACE. This is NOT an exterior building. Preserve: room layout, ceiling height, furniture arrangement, window positions. Improve: materials, finishes, lighting, shadows, atmosphere, realism. Do not redesign the room or add extra spaces. User brief: " + (prompt || "Create a realistic interior architectural render.")
+      ? "IMPORTANT: This is an INTERIOR SPACE. You are looking INSIDE a building, not at the outside. There is NO exterior view. Treat this as an indoor architectural photograph. Preserve exactly: the room shape, ceiling, floor, walls, furniture positions, windows as seen from inside. Enhance: interior lighting (lamps, ceiling lights, natural light through windows), material finishes on floors walls and ceiling, furniture quality, soft furnishings, plants and accessories. Make it look like a high quality interior design photograph shot inside the room. Do NOT show any building exterior, facade, landscape or sky. User brief: " + (prompt || "Create a photorealistic interior architectural render.")
       : "Photorealistic architectural visualisation. Preserve the building design exactly. Improve materials, lighting, landscape and realism without redesigning. User brief: " + (prompt || "Create a realistic architectural render.");
 
     const imageBuffer = Buffer.from(imageBase64, "base64");
@@ -220,93 +219,10 @@ app.post("/api/render-v2", async (req, res) => {
   }
 });
 
+// Video routes using Runway
 app.post("/api/video", async (req, res) => {
   try {
-    const { prompt, imageBase64, images } = req.body;
-    const imageList = (Array.isArray(images) && images.length) ? images : (imageBase64 ? [imageBase64] : []);
-    if (!prompt) return res.status(400).json({ error: "Missing prompt." });
-    if (!imageList.length) return res.status(400).json({ error: "Please upload an image." });
-    const src = imageList[0];
-    const imageUrl = src.startsWith("data:") ? src : "data:image/png;base64," + src;
-    const motion = prompt + ". Slow cinematic camera move. Keep the building unchanged. Realistic architectural walkthrough.";
-    const r = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + process.env.RUNWAY_API_KEY,
-        "Content-Type": "application/json",
-        "X-Runway-Version": "2024-11-06",
-      },
-      body: JSON.stringify({ model: "gen4_turbo", promptImage: imageUrl, promptText: motion, ratio: "1280:720", duration: 10 }),
-    });
-    const data = await r.json();
-    if (!r.ok || !data.id) return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
-    res.json({ ok: true, video: { id: data.id } });
-  } catch (error) {
-    res.status(500).json({ error: "Video failed.", detail: error.message });
-  }
-});
-
-app.get("/api/video/:id", async (req, res) => {
-  try {
-    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
-      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
-    });
-    const data = await r.json();
-    const status = data.status === "SUCCEEDED" ? "completed" : data.status === "FAILED" ? "failed" : "in_progress";
-    res.json({ ok: true, video: { status } });
-  } catch (error) {
-    res.status(500).json({ error: "Status failed." });
-  }
-});
-
-app.get("/api/video/:id/url", async (req, res) => {
-  try {
-    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
-      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
-    });
-    const data = await r.json();
-    const url = data.output && data.output[0] ? data.output[0] : null;
-    if (!url) return res.status(404).json({ error: "No video URL yet." });
-    res.json({ ok: true, url });
-  } catch (error) {
-    res.status(500).json({ error: "URL fetch failed." });
-  }
-});
-app.post("/render", async (req, res) => {
-  req.setTimeout(110000);
-  res.setTimeout(110000);
-  try {
-    const { prompt, imageBase64, mode = "render" } = req.body || {};
-    if (!imageBase64) return res.status(400).json({ ok: false, error: "Upload an image first." });
-
-    const isInterior = mode === "interior";
-    const finalPrompt = isInterior
-      ? "IMPORTANT: This is an INTERIOR SPACE. You are looking INSIDE a building, not at the outside. There is NO exterior view. Treat this as an indoor architectural photograph. Preserve exactly: the room shape, ceiling, floor, walls, furniture positions, windows as seen from inside. Enhance: interior lighting, material finishes on floors walls and ceiling, furniture quality, soft furnishings, plants and accessories. Make it look like a high quality interior design photograph shot inside the room. Do NOT show any building exterior, facade, landscape or sky. User brief: " + (prompt || "Create a photorealistic interior architectural render.")
-      : "Photorealistic architectural visualisation. Preserve the building design exactly. Improve materials, lighting, landscape and realism without redesigning. User brief: " + (prompt || "Create a realistic architectural render.");
-
-    const imageBuffer = Buffer.from(imageBase64, "base64");
-    const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
-
-    const response = await openai.images.edit({
-      model: "gpt-image-1",
-      image: imageFile,
-      prompt: finalPrompt,
-      size: "1024x1024",
-    });
-
-    const imageBase64Out = response?.data?.[0]?.b64_json;
-    if (!imageBase64Out) return res.status(500).json({ ok: false, error: "No image returned." });
-
-    return res.json({ ok: true, image: "data:image/png;base64," + imageBase64Out });
-  } catch (error) {
-    console.error("Render error:", error);
-    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
-  }
-});
-
-app.post("/api/video", async (req, res) => {
-  try {
-    const { prompt, imageBase64, images } = req.body;
+    const { prompt, imageBase64, images, mode = "render" } = req.body;
     const imageList = (Array.isArray(images) && images.length) ? images : (imageBase64 ? [imageBase64] : []);
     if (!prompt) return res.status(400).json({ error: "Missing prompt." });
     if (!imageList.length) return res.status(400).json({ error: "Please upload an image." });
@@ -315,7 +231,7 @@ app.post("/api/video", async (req, res) => {
     const base64Data = src.startsWith("data:") ? src.split(",")[1] : src;
     const imageBuffer = Buffer.from(base64Data, "base64");
 
-    // Upload to fal storage to get a URL for Runway
+    // Upload image to fal storage to get a URL for Runway
     const formData = new FormData();
     const blob = new Blob([imageBuffer], { type: "image/png" });
     formData.append("file", blob, "image.png");
@@ -328,9 +244,16 @@ app.post("/api/video", async (req, res) => {
     const uploadData = await uploadRes.json();
     const imageUrl = uploadData.url;
 
-    if (!imageUrl) return res.status(500).json({ error: "Image upload failed.", detail: JSON.stringify(uploadData) });
+    if (!imageUrl) {
+      console.error("Image upload failed:", uploadData);
+      return res.status(500).json({ error: "Image upload failed.", detail: JSON.stringify(uploadData) });
+    }
 
-    const motion = prompt + ". Slow cinematic camera move. Keep the building unchanged. Realistic architectural walkthrough.";
+    const isInterior = mode === "interior";
+    const motion = isInterior
+      ? prompt + ". Slow cinematic pan around the interior space. Keep the room unchanged. Realistic architectural interior walkthrough."
+      : prompt + ". Slow cinematic camera move around the building. Keep the building unchanged. Realistic architectural exterior walkthrough.";
+
     const r = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
       method: "POST",
       headers: {
@@ -352,7 +275,6 @@ app.post("/api/video", async (req, res) => {
   }
 });
 
-
 app.get("/api/video/:id", async (req, res) => {
   try {
     const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
@@ -380,12 +302,26 @@ app.get("/api/video/:id/url", async (req, res) => {
   }
 });
 
+app.get("/api/video/:id/content", async (req, res) => {
+  try {
+    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
+      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
+    });
+    const data = await r.json();
+    const url = data.output && data.output[0] ? data.output[0] : null;
+    if (!url) return res.status(404).json({ error: "No video URL yet." });
+    return res.redirect(302, url);
+  } catch (error) {
+    res.status(500).json({ error: "Content failed." });
+  }
+});
+
 const SELF_URL = "https://monocular-server.onrender.com/health";
 setInterval(function () {
   fetch(SELF_URL).then(function () {}).catch(function () {});
 }, 600000);
 
 app.listen(PORT, () => {
-  console.log("thedoss server running on port " + PORT);
+  console.log("Monocular server running on port " + PORT);
   console.log("Architectural Director brain active.");
 });
