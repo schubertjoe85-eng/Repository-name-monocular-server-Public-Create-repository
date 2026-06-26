@@ -268,7 +268,8 @@ app.post("/api/video", async (req, res) => {
       });
     }
 
-    const runwayUri = uploadData.uri;
+    const runwayUri = uploadData.runwayUri;
+
 
     // Step 3: Submit video job
     const isInterior = mode === "interior";
