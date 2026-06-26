@@ -245,29 +245,30 @@ app.post("/api/video", async (req, res) => {
       }),
     });
     const uploadData = await uploadInit.json();
-    if (!uploadInit.ok || !uploadData.uploadUrl) {
+    console.log("FULL uploadData:", JSON.stringify(uploadData));
+
+    if (!uploadInit.ok || !uploadData.uri) {
       console.error("Runway upload init failed:", JSON.stringify(uploadData));
       return res.status(500).json({ error: "Upload init failed.", detail: JSON.stringify(uploadData) });
     }
 
-   // Step 2: Upload the image to S3 using multipart form
-const formData = new FormData();
-Object.entries(uploadData.fields).forEach(([key, value]) => {
-  formData.append(key, value);
-});
-formData.append("file", new Blob([imageBuffer], { type: "image/png" }), "source.png");
+    // Step 2: Upload the image
+    if (uploadData.fields) {
+      const formData = new FormData();
+      Object.entries(uploadData.fields).forEach(([key, value]) => {
+        formData.append(key, value);
+      });
+      formData.append("file", new Blob([imageBuffer], { type: "image/png" }), "source.png");
+      await fetch(uploadData.uploadUrl, { method: "POST", body: formData });
+    } else {
+      await fetch(uploadData.uploadUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "image/png" },
+        body: imageBuffer,
+      });
+    }
 
-await fetch(uploadData.uploadUrl, {
-  method: "POST",
-  body: formData,
-});
-
-console.log("Upload data:", JSON.stringify(uploadData));
-const runwayUri = uploadData.uri; // ✅ correct
-
-
-
-
+    const runwayUri = uploadData.uri;
 
     // Step 3: Submit video job
     const isInterior = mode === "interior";
@@ -282,9 +283,17 @@ const runwayUri = uploadData.uri; // ✅ correct
         "Content-Type": "application/json",
         "X-Runway-Version": "2024-11-06",
       },
-      body: JSON.stringify({ model: "gen4_turbo", promptImage: runwayUri, promptText: motion, ratio: "1024:1024", duration: 10 }),
+      body: JSON.stringify({
+        model: "gen4_turbo",
+        promptImage: runwayUri,
+        promptText: motion,
+        ratio: "960:960",
+        duration: 10,
+      }),
     });
     const data = await r.json();
+    console.log("Runway video response:", JSON.stringify(data));
+
     if (!r.ok || !data.id) {
       console.error("Runway error:", JSON.stringify(data));
       return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
