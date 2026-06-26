@@ -247,7 +247,8 @@ app.post("/api/video", async (req, res) => {
     const uploadData = await uploadInit.json();
     console.log("FULL uploadData:", JSON.stringify(uploadData));
 
-    if (!uploadInit.ok || !uploadData.uri) {
+    if (!uploadInit.ok || !uploadData.runwayUri) {
+
       console.error("Runway upload init failed:", JSON.stringify(uploadData));
       return res.status(500).json({ error: "Upload init failed.", detail: JSON.stringify(uploadData) });
     }
