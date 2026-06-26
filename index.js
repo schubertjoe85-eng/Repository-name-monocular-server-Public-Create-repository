@@ -226,8 +226,39 @@ app.post("/api/video", async (req, res) => {
     if (!imageList.length) return res.status(400).json({ error: "Please upload an image." });
 
     const src = imageList[0];
-    const imageUrl = src.startsWith("data:") ? src : "data:image/png;base64," + src;
+    const base64Data = src.startsWith("data:") ? src.split(",")[1] : src;
+    const imageBuffer = Buffer.from(base64Data, "base64");
 
+    // Step 1: Get a Runway upload URL
+    const uploadInit = await fetch("https://api.dev.runwayml.com/v1/uploads", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + process.env.RUNWAY_API_KEY,
+        "Content-Type": "application/json",
+        "X-Runway-Version": "2024-11-06",
+      },
+      body: JSON.stringify({
+        contentType: "image/png",
+        contentLength: imageBuffer.length,
+        filename: "source.png",
+      }),
+    });
+    const uploadData = await uploadInit.json();
+    if (!uploadInit.ok || !uploadData.url) {
+      console.error("Runway upload init failed:", JSON.stringify(uploadData));
+      return res.status(500).json({ error: "Upload init failed.", detail: JSON.stringify(uploadData) });
+    }
+
+    // Step 2: Upload the image to S3
+    await fetch(uploadData.url, {
+      method: "PUT",
+      headers: { "Content-Type": "image/png" },
+      body: imageBuffer,
+    });
+
+    const runwayUri = uploadData.id;
+
+    // Step 3: Submit video job
     const isInterior = mode === "interior";
     const motion = isInterior
       ? prompt + ". Slow cinematic pan around the interior space. Keep the room unchanged. Realistic architectural interior walkthrough."
@@ -240,7 +271,7 @@ app.post("/api/video", async (req, res) => {
         "Content-Type": "application/json",
         "X-Runway-Version": "2024-11-06",
       },
-      body: JSON.stringify({ model: "gen4_turbo", promptImage: imageUrl, promptText: motion, ratio: "1280:720", duration: 10 }),
+      body: JSON.stringify({ model: "gen4_turbo", promptImage: runwayUri, promptText: motion, ratio: "1280:720", duration: 10 }),
     });
     const data = await r.json();
     if (!r.ok || !data.id) {
@@ -254,46 +285,6 @@ app.post("/api/video", async (req, res) => {
   }
 });
 
-app.get("/api/video/:id", async (req, res) => {
-  try {
-    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
-      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
-    });
-    const data = await r.json();
-    const status = data.status === "SUCCEEDED" ? "completed" : data.status === "FAILED" ? "failed" : "in_progress";
-    res.json({ ok: true, video: { status } });
-  } catch (error) {
-    res.status(500).json({ error: "Status failed." });
-  }
-});
-
-app.get("/api/video/:id/url", async (req, res) => {
-  try {
-    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
-      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
-    });
-    const data = await r.json();
-    const url = data.output && data.output[0] ? data.output[0] : null;
-    if (!url) return res.status(404).json({ error: "No video URL yet." });
-    res.json({ ok: true, url });
-  } catch (error) {
-    res.status(500).json({ error: "URL fetch failed." });
-  }
-});
-
-app.get("/api/video/:id/content", async (req, res) => {
-  try {
-    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
-      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
-    });
-    const data = await r.json();
-    const url = data.output && data.output[0] ? data.output[0] : null;
-    if (!url) return res.status(404).json({ error: "No video URL yet." });
-    return res.redirect(302, url);
-  } catch (error) {
-    res.status(500).json({ error: "Content failed." });
-  }
-});
 
 const SELF_URL = "https://monocular-server.onrender.com/health";
 setInterval(function () {
