@@ -17,8 +17,6 @@ const openai = new OpenAI({
 
 const PORT = process.env.PORT || 3000;
 
-let videoCache = { id: null, buffer: null };
-
 let projectMemory = {
   appName: "thedoss",
   buildingType: "",
@@ -109,9 +107,7 @@ app.get("/api/memory", (req, res) => {
 app.post("/api/brain", async (req, res) => {
   try {
     const { prompt, mode, imageBase64 } = req.body;
-    if (!prompt) {
-      return res.status(400).json({ error: "Missing prompt." });
-    }
+    if (!prompt) return res.status(400).json({ error: "Missing prompt." });
     const brief = await buildBrain({
       userPrompt: prompt,
       renderMode: mode || "image",
@@ -129,14 +125,11 @@ app.post("/api/render", async (req, res) => {
     const { prompt, imageBase64 } = req.body;
     if (!prompt) return res.status(400).json({ error: "Missing prompt." });
 
-    // Try the brain, but NEVER let it break the render.
     let finalPrompt = prompt + ". Photorealistic architectural visualization, faithful to the supplied design. Real materials, natural daylight, accurate proportions. Do not redesign, restyle, or invent elements not present.";
     let brief = null;
     try {
       brief = await buildBrain({ userPrompt: prompt, renderMode: "image", uploadedImageBase64: imageBase64 });
-      if (brief && brief.cleanPrompt) {
-        finalPrompt = buildFinalImagePrompt(brief);
-      }
+      if (brief && brief.cleanPrompt) finalPrompt = buildFinalImagePrompt(brief);
     } catch (brainErr) {
       console.error("Brain skipped:", brainErr.message);
     }
@@ -158,14 +151,44 @@ app.post("/api/render", async (req, res) => {
     }
 
     const imageCall = response.output.find(function(item) { return item.type === "image_generation_call"; });
-    if (!imageCall || !imageCall.result) {
-      return res.status(500).json({ error: "No image generated. Please try again." });
-    }
+    if (!imageCall || !imageCall.result) return res.status(500).json({ error: "No image generated. Please try again." });
 
     return res.json({ ok: true, brief: brief, imageBase64: imageCall.result });
   } catch (error) {
     console.error("Render error:", error);
     return res.status(500).json({ error: "Render failed.", detail: error.message });
+  }
+});
+
+app.post("/render", async (req, res) => {
+  req.setTimeout(110000);
+  res.setTimeout(110000);
+  try {
+    const { prompt, imageBase64, mode = "render" } = req.body || {};
+    if (!imageBase64) return res.status(400).json({ ok: false, error: "Upload an image first." });
+
+    const isInterior = mode === "interior";
+    const finalPrompt = isInterior
+      ? "INTERIOR ARCHITECTURAL SPACE. This is NOT an exterior building. Preserve: room layout, ceiling height, furniture arrangement, window positions. Improve: materials, finishes, lighting, shadows, atmosphere, realism. Do not redesign the room or add extra spaces. User brief: " + (prompt || "Create a realistic interior architectural render.")
+      : "Photorealistic architectural visualisation. Preserve the building design exactly. Improve materials, lighting, landscape and realism without redesigning. User brief: " + (prompt || "Create a realistic architectural render.");
+
+    const imageBuffer = Buffer.from(imageBase64, "base64");
+    const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
+
+    const response = await openai.images.edit({
+      model: "gpt-image-1",
+      image: imageFile,
+      prompt: finalPrompt,
+      size: "1024x1024",
+    });
+
+    const imageBase64Out = response?.data?.[0]?.b64_json;
+    if (!imageBase64Out) return res.status(500).json({ ok: false, error: "No image returned." });
+
+    return res.json({ ok: true, image: "data:image/png;base64," + imageBase64Out });
+  } catch (error) {
+    console.error("Render error:", error);
+    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
   }
 });
 
@@ -189,11 +212,10 @@ app.post("/api/render-v2", async (req, res) => {
       body: JSON.stringify(Object.assign({ prompt: finalPrompt, image_url: ctrl }, CONTROL_CONFIG, { preprocess: preprocess || CONTROL_CONFIG.preprocess, control_scale: typeof controlScale === "number" ? controlScale : CONTROL_CONFIG.control_scale }))
     });
     const data = await falRes.json();
-    if (!falRes.ok) { console.error("Fal error:", data); return res.status(500).json({ error: "Fal render failed.", detail: JSON.stringify(data) }); }
+    if (!falRes.ok) return res.status(500).json({ error: "Fal render failed.", detail: JSON.stringify(data) });
     const outUrl = data.images && data.images[0] ? data.images[0].url : null;
     res.json({ ok: true, imageUrl: outUrl });
   } catch (error) {
-    console.error("Render-v2 error:", error);
     res.status(500).json({ error: "Render-v2 failed.", detail: error.message });
   }
 });
@@ -206,59 +228,48 @@ app.post("/api/video", async (req, res) => {
     if (!imageList.length) return res.status(400).json({ error: "Please upload an image." });
     const src = imageList[0];
     const imageUrl = src.startsWith("data:") ? src : "data:image/png;base64," + src;
-    const motion = prompt + ". Keep the building structure unchanged; realistic cinematic motion.";
-    const r = await fetch("https://queue.fal.run/fal-ai/wan-i2v", {
+    const motion = prompt + ". Slow cinematic camera move. Keep the building unchanged. Realistic architectural walkthrough.";
+    const r = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
       method: "POST",
-      headers: { Authorization: "Key " + process.env.FAL_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: motion, image_url: imageUrl, resolution: "480p" })
+      headers: {
+        Authorization: "Bearer " + process.env.RUNWAY_API_KEY,
+        "Content-Type": "application/json",
+        "X-Runway-Version": "2024-11-06",
+      },
+      body: JSON.stringify({ model: "gen4_turbo", promptImage: imageUrl, promptText: motion, ratio: "1280:720", duration: 5 }),
     });
     const data = await r.json();
-    if (!r.ok || !data.request_id) { console.error("Wan submit error:", data); return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) }); }
-    res.json({ ok: true, video: { id: data.request_id } });
+    if (!r.ok || !data.id) return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
+    res.json({ ok: true, video: { id: data.id } });
   } catch (error) {
-    console.error("Video error:", error);
     res.status(500).json({ error: "Video failed.", detail: error.message });
   }
 });
 
 app.get("/api/video/:id", async (req, res) => {
   try {
-    const r = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + req.params.id + "/status", {
-      headers: { Authorization: "Key " + process.env.FAL_KEY }
+    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
+      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
     });
     const data = await r.json();
-    const done = data.status === "COMPLETED";
-    res.json({ ok: true, video: { status: done ? "completed" : "in_progress" } });
+    const status = data.status === "SUCCEEDED" ? "completed" : data.status === "FAILED" ? "failed" : "in_progress";
+    res.json({ ok: true, video: { status } });
   } catch (error) {
-    res.status(500).json({ error: "Status failed.", detail: error.message });
-  }
-});
-
-app.get("/api/video/:id/content", async (req, res) => {
-  try {
-    const rr = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + req.params.id, {
-      headers: { Authorization: "Key " + process.env.FAL_KEY }
-    });
-    const result = await rr.json();
-    const url = result.video ? result.video.url : null;
-    if (!url) return res.status(404).json({ error: "No video URL yet." });
-    return res.redirect(302, url);
-  } catch (error) {
-    res.status(500).json({ error: "Content failed.", detail: error.message });
+    res.status(500).json({ error: "Status failed." });
   }
 });
 
 app.get("/api/video/:id/url", async (req, res) => {
   try {
-    const rr = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + req.params.id, {
-      headers: { Authorization: "Key " + process.env.FAL_KEY }
+    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
+      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
     });
-    const result = await rr.json();
-    const url = result.video ? result.video.url : null;
+    const data = await r.json();
+    const url = data.output && data.output[0] ? data.output[0] : null;
     if (!url) return res.status(404).json({ error: "No video URL yet." });
-    res.json({ ok: true, url: url });
+    res.json({ ok: true, url });
   } catch (error) {
-    res.status(500).json({ error: "URL fetch failed.", detail: error.message });
+    res.status(500).json({ error: "URL fetch failed." });
   }
 });
 
