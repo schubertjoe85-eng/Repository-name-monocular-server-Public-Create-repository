@@ -281,7 +281,7 @@ const runwayUri = uploadData.runwayUri;
         "Content-Type": "application/json",
         "X-Runway-Version": "2024-11-06",
       },
-      body: JSON.stringify({ model: "gen4_turbo", promptImage: runwayUri, promptText: motion, ratio: "1280:720", duration: 10 }),
+      body: JSON.stringify({ model: "gen4_turbo", promptImage: runwayUri, promptText: motion, ratio: "720:1280", duration: 10 }),
     });
     const data = await r.json();
     if (!r.ok || !data.id) {
