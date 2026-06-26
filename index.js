@@ -310,8 +310,26 @@ app.post("/api/video", async (req, res) => {
     const imageList = (Array.isArray(images) && images.length) ? images : (imageBase64 ? [imageBase64] : []);
     if (!prompt) return res.status(400).json({ error: "Missing prompt." });
     if (!imageList.length) return res.status(400).json({ error: "Please upload an image." });
+
     const src = imageList[0];
-    const imageUrl = src.startsWith("data:") ? src : "data:image/png;base64," + src;
+    const base64Data = src.startsWith("data:") ? src.split(",")[1] : src;
+    const imageBuffer = Buffer.from(base64Data, "base64");
+
+    // Upload to fal storage to get a URL for Runway
+    const formData = new FormData();
+    const blob = new Blob([imageBuffer], { type: "image/png" });
+    formData.append("file", blob, "image.png");
+
+    const uploadRes = await fetch("https://fal.run/storage/upload", {
+      method: "POST",
+      headers: { Authorization: "Key " + process.env.FAL_KEY },
+      body: formData,
+    });
+    const uploadData = await uploadRes.json();
+    const imageUrl = uploadData.url;
+
+    if (!imageUrl) return res.status(500).json({ error: "Image upload failed.", detail: JSON.stringify(uploadData) });
+
     const motion = prompt + ". Slow cinematic camera move. Keep the building unchanged. Realistic architectural walkthrough.";
     const r = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
       method: "POST",
@@ -323,16 +341,17 @@ app.post("/api/video", async (req, res) => {
       body: JSON.stringify({ model: "gen4_turbo", promptImage: imageUrl, promptText: motion, ratio: "1280:720", duration: 5 }),
     });
     const data = await r.json();
-    if (!r.ok || !data.id) return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
     if (!r.ok || !data.id) {
-  console.error("Runway error:", JSON.stringify(data));
-  return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
-}
-
+      console.error("Runway error:", JSON.stringify(data));
+      return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
+    }
+    res.json({ ok: true, video: { id: data.id } });
   } catch (error) {
+    console.error("Video error:", error);
     res.status(500).json({ error: "Video failed.", detail: error.message });
   }
 });
+
 
 app.get("/api/video/:id", async (req, res) => {
   try {
