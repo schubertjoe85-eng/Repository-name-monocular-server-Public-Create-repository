@@ -262,7 +262,9 @@ await fetch(uploadData.uploadUrl, {
   body: formData,
 });
 
+console.log("Upload data:", JSON.stringify(uploadData));
 const runwayUri = uploadData.runwayUri;
+
 
 
 
