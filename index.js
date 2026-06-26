@@ -245,13 +245,13 @@ app.post("/api/video", async (req, res) => {
       }),
     });
     const uploadData = await uploadInit.json();
-    if (!uploadInit.ok || !uploadData.url) {
+    if (!uploadInit.ok || !uploadData.uploadUrl) {
       console.error("Runway upload init failed:", JSON.stringify(uploadData));
       return res.status(500).json({ error: "Upload init failed.", detail: JSON.stringify(uploadData) });
     }
 
     // Step 2: Upload the image to S3
-    await fetch(uploadData.url, {
+   await fetch(uploadData.uploadUrl, {
       method: "PUT",
       headers: { "Content-Type": "image/png" },
       body: imageBuffer,
