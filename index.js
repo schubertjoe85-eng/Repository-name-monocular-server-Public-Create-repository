@@ -272,6 +272,90 @@ app.get("/api/video/:id/url", async (req, res) => {
     res.status(500).json({ error: "URL fetch failed." });
   }
 });
+app.post("/render", async (req, res) => {
+  req.setTimeout(110000);
+  res.setTimeout(110000);
+  try {
+    const { prompt, imageBase64, mode = "render" } = req.body || {};
+    if (!imageBase64) return res.status(400).json({ ok: false, error: "Upload an image first." });
+
+    const isInterior = mode === "interior";
+    const finalPrompt = isInterior
+      ? "IMPORTANT: This is an INTERIOR SPACE. You are looking INSIDE a building, not at the outside. There is NO exterior view. Treat this as an indoor architectural photograph. Preserve exactly: the room shape, ceiling, floor, walls, furniture positions, windows as seen from inside. Enhance: interior lighting, material finishes on floors walls and ceiling, furniture quality, soft furnishings, plants and accessories. Make it look like a high quality interior design photograph shot inside the room. Do NOT show any building exterior, facade, landscape or sky. User brief: " + (prompt || "Create a photorealistic interior architectural render.")
+      : "Photorealistic architectural visualisation. Preserve the building design exactly. Improve materials, lighting, landscape and realism without redesigning. User brief: " + (prompt || "Create a realistic architectural render.");
+
+    const imageBuffer = Buffer.from(imageBase64, "base64");
+    const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
+
+    const response = await openai.images.edit({
+      model: "gpt-image-1",
+      image: imageFile,
+      prompt: finalPrompt,
+      size: "1024x1024",
+    });
+
+    const imageBase64Out = response?.data?.[0]?.b64_json;
+    if (!imageBase64Out) return res.status(500).json({ ok: false, error: "No image returned." });
+
+    return res.json({ ok: true, image: "data:image/png;base64," + imageBase64Out });
+  } catch (error) {
+    console.error("Render error:", error);
+    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
+  }
+});
+
+app.post("/api/video", async (req, res) => {
+  try {
+    const { prompt, imageBase64, images } = req.body;
+    const imageList = (Array.isArray(images) && images.length) ? images : (imageBase64 ? [imageBase64] : []);
+    if (!prompt) return res.status(400).json({ error: "Missing prompt." });
+    if (!imageList.length) return res.status(400).json({ error: "Please upload an image." });
+    const src = imageList[0];
+    const imageUrl = src.startsWith("data:") ? src : "data:image/png;base64," + src;
+    const motion = prompt + ". Slow cinematic camera move. Keep the building unchanged. Realistic architectural walkthrough.";
+    const r = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + process.env.RUNWAY_API_KEY,
+        "Content-Type": "application/json",
+        "X-Runway-Version": "2024-11-06",
+      },
+      body: JSON.stringify({ model: "gen4_turbo", promptImage: imageUrl, promptText: motion, ratio: "1280:720", duration: 5 }),
+    });
+    const data = await r.json();
+    if (!r.ok || !data.id) return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
+    res.json({ ok: true, video: { id: data.id } });
+  } catch (error) {
+    res.status(500).json({ error: "Video failed.", detail: error.message });
+  }
+});
+
+app.get("/api/video/:id", async (req, res) => {
+  try {
+    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
+      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
+    });
+    const data = await r.json();
+    const status = data.status === "SUCCEEDED" ? "completed" : data.status === "FAILED" ? "failed" : "in_progress";
+    res.json({ ok: true, video: { status } });
+  } catch (error) {
+    res.status(500).json({ error: "Status failed." });
+  }
+});
+
+app.get("/api/video/:id/url", async (req, res) => {
+  try {
+    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
+      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
+    });
+    const data = await r.json();
+    const url = data.output && data.output[0] ? data.output[0] : null;
+    if (!url) return res.status(404).json({ error: "No video URL yet." });
+    res.json({ ok: true, url });
+  } catch (error) {
+    res.status(500).json({ error: "URL fetch failed." });
+  }
+});
 
 const SELF_URL = "https://monocular-server.onrender.com/health";
 setInterval(function () {
