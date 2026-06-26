@@ -236,7 +236,7 @@ app.post("/api/video", async (req, res) => {
         "Content-Type": "application/json",
         "X-Runway-Version": "2024-11-06",
       },
-      body: JSON.stringify({ model: "gen4_turbo", promptImage: imageUrl, promptText: motion, ratio: "1280:720", duration: 5 }),
+      body: JSON.stringify({ model: "gen4_turbo", promptImage: imageUrl, promptText: motion, ratio: "1280:720", duration: 10 }),
     });
     const data = await r.json();
     if (!r.ok || !data.id) return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
