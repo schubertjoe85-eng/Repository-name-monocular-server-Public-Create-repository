@@ -206,49 +206,51 @@ app.post("/api/video", async (req, res) => {
     if (!imageList.length) return res.status(400).json({ error: "Please upload an image." });
     const src = imageList[0];
     const imageUrl = src.startsWith("data:") ? src : "data:image/png;base64," + src;
-    const motion = prompt + ". Keep the building structure unchanged; realistic cinematic motion.";
-    const r = await fetch("https://queue.fal.run/fal-ai/wan-i2v", {
+    const motion = prompt + ". Slow cinematic camera move. Keep the building unchanged. Realistic architectural walkthrough.";
+    const r = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
       method: "POST",
-      headers: { Authorization: "Key " + process.env.FAL_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: motion, image_url: imageUrl, resolution: "480p" })
+      headers: {
+        Authorization: "Bearer " + process.env.RUNWAY_API_KEY,
+        "Content-Type": "application/json",
+        "X-Runway-Version": "2024-11-06",
+      },
+      body: JSON.stringify({ model: "gen4_turbo", promptImage: imageUrl, promptText: motion, ratio: "1280:720", duration: 5 }),
     });
     const data = await r.json();
-    if (!r.ok || !data.request_id) { console.error("Wan submit error:", data); return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) }); }
-    res.json({ ok: true, video: { id: data.request_id } });
+    if (!r.ok || !data.id) return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
+    res.json({ ok: true, video: { id: data.id } });
   } catch (error) {
-    console.error("Video error:", error);
     res.status(500).json({ error: "Video failed.", detail: error.message });
   }
 });
 
 app.get("/api/video/:id", async (req, res) => {
   try {
-    const r = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + req.params.id + "/status", {
-      headers: { Authorization: "Key " + process.env.FAL_KEY }
+    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
+      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
     });
     const data = await r.json();
-    const done = data.status === "COMPLETED";
-    res.json({ ok: true, video: { status: done ? "completed" : "in_progress" } });
+    const status = data.status === "SUCCEEDED" ? "completed" : data.status === "FAILED" ? "failed" : "in_progress";
+    res.json({ ok: true, video: { status } });
   } catch (error) {
-    res.status(500).json({ error: "Status failed.", detail: error.message });
-  }
-});
-
-app.get("/api/video/:id/content", async (req, res) => {
-  try {
-    const rr = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + req.params.id, {
-      headers: { Authorization: "Key " + process.env.FAL_KEY }
-    });
-    const result = await rr.json();
-    const url = result.video ? result.video.url : null;
-    if (!url) return res.status(404).json({ error: "No video URL yet." });
-    return res.redirect(302, url);
-  } catch (error) {
-    res.status(500).json({ error: "Content failed.", detail: error.message });
+    res.status(500).json({ error: "Status failed." });
   }
 });
 
 app.get("/api/video/:id/url", async (req, res) => {
+  try {
+    const r = await fetch("https://api.dev.runwayml.com/v1/tasks/" + req.params.id, {
+      headers: { Authorization: "Bearer " + process.env.RUNWAY_API_KEY, "X-Runway-Version": "2024-11-06" },
+    });
+    const data = await r.json();
+    const url = data.output && data.output[0] ? data.output[0] : null;
+    if (!url) return res.status(404).json({ error: "No video URL yet." });
+    res.json({ ok: true, url });
+  } catch (error) {
+    res.status(500).json({ error: "URL fetch failed." });
+  }
+});
+", async (req, res) => {
   try {
     const rr = await fetch("https://queue.fal.run/fal-ai/wan-i2v/requests/" + req.params.id, {
       headers: { Authorization: "Key " + process.env.FAL_KEY }
