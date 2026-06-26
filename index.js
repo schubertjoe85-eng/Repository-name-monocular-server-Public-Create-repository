@@ -158,7 +158,6 @@ app.post("/api/render", async (req, res) => {
   }
 });
 
-// Main render route used by the app - supports interior and exterior modes
 app.post("/render", async (req, res) => {
   req.setTimeout(110000);
   res.setTimeout(110000);
@@ -219,7 +218,6 @@ app.post("/api/render-v2", async (req, res) => {
   }
 });
 
-// Video routes using Runway
 app.post("/api/video", async (req, res) => {
   try {
     const { prompt, imageBase64, images, mode = "render" } = req.body;
@@ -228,26 +226,7 @@ app.post("/api/video", async (req, res) => {
     if (!imageList.length) return res.status(400).json({ error: "Please upload an image." });
 
     const src = imageList[0];
-    const base64Data = src.startsWith("data:") ? src.split(",")[1] : src;
-    const imageBuffer = Buffer.from(base64Data, "base64");
-
-    // Upload image to fal storage to get a URL for Runway
-    const formData = new FormData();
-    const blob = new Blob([imageBuffer], { type: "image/png" });
-    formData.append("file", blob, "image.png");
-
-    const uploadRes = await fetch("https://fal.run/storage/upload", {
-      method: "POST",
-      headers: { Authorization: "Key " + process.env.FAL_KEY },
-      body: formData,
-    });
-    const uploadData = await uploadRes.json();
-    const imageUrl = uploadData.url;
-
-    if (!imageUrl) {
-      console.error("Image upload failed:", uploadData);
-      return res.status(500).json({ error: "Image upload failed.", detail: JSON.stringify(uploadData) });
-    }
+    const imageUrl = src.startsWith("data:") ? src : "data:image/png;base64," + src;
 
     const isInterior = mode === "interior";
     const motion = isInterior
