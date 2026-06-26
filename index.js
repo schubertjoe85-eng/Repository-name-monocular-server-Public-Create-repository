@@ -250,14 +250,21 @@ app.post("/api/video", async (req, res) => {
       return res.status(500).json({ error: "Upload init failed.", detail: JSON.stringify(uploadData) });
     }
 
-    // Step 2: Upload the image to S3
-   await fetch(uploadData.uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Type": "image/png" },
-      body: imageBuffer,
-    });
+   // Step 2: Upload the image to S3 using multipart form
+const formData = new FormData();
+Object.entries(uploadData.fields).forEach(([key, value]) => {
+  formData.append(key, value);
+});
+formData.append("file", new Blob([imageBuffer], { type: "image/png" }), "source.png");
 
-    const runwayUri = uploadData.id;
+await fetch(uploadData.uploadUrl, {
+  method: "POST",
+  body: formData,
+});
+
+const runwayUri = uploadData.runwayUri;
+
+
 
     // Step 3: Submit video job
     const isInterior = mode === "interior";
