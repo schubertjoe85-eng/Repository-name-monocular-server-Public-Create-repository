@@ -324,7 +324,11 @@ app.post("/api/video", async (req, res) => {
     });
     const data = await r.json();
     if (!r.ok || !data.id) return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
-    res.json({ ok: true, video: { id: data.id } });
+    if (!r.ok || !data.id) {
+  console.error("Runway error:", JSON.stringify(data));
+  return res.status(500).json({ error: "Video failed.", detail: JSON.stringify(data) });
+}
+
   } catch (error) {
     res.status(500).json({ error: "Video failed.", detail: error.message });
   }
