@@ -275,8 +275,11 @@ app.post("/api/video", async (req, res) => {
     // Step 3: Submit video job
     const isInterior = mode === "interior";
     const motion = isInterior
-      ? prompt + ". Slow cinematic pan around the interior space. Keep the room unchanged. Realistic architectural interior walkthrough."
-      : prompt + ". Slow cinematic camera move around the building. Keep the building unchanged. Realistic architectural exterior walkthrough.";
+      prompt + ". Smooth cinematic walkthrough panning across the room with a gentle forward drift. Keep the room unchanged. Realistic architectural interior walkthrough."
+
+      prompt + ". Smooth cinematic orbit around the building, wide to close, gentle push in. Keep the building unchanged. Realistic architectural exterior walkthrough."
+
+
 
     const r = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
       method: "POST",
