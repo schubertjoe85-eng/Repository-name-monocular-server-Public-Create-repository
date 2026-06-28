@@ -54,7 +54,7 @@ async function buildBrain({ userPrompt, renderMode = "image", uploadedImageBase6
   const content = [
     {
       type: "input_text",
-      text: "User request:\n" + userPrompt + "\n\nRequested mode:\n" + renderMode + "\n\nCurrent project memory:\n" + JSON.stringify(projectMemory, null, 2) + "\n\nCreate a strict architectural render brief."
+      text: "User request:\n" + userPrompt + "\n\nRequested mode:\n" + renderMode + "\n\nCurrent project memory:\n" + JSON.stringify(projectMemory, null, 2) + "\n\nCreate a strict architectural render brief. Return ONLY valid JSON."
     }
   ];
 
@@ -82,7 +82,41 @@ async function buildBrain({ userPrompt, renderMode = "image", uploadedImageBase6
 
 function buildFinalImagePrompt(brief) {
   const preserveList = (brief.mustPreserve || []).map(function(x) { return "- " + x; }).join("\n");
-  return "ARCHITECTURAL RENDER BRIEF\n\n" + brief.cleanPrompt + "\n\nCamera:\n" + brief.camera + "\n\nMaterials:\n" + brief.materials + "\n\nSite context:\n" + brief.siteContext + "\n\nLighting:\n" + brief.lighting + "\n\nMust preserve:\n" + preserveList + "\n\nAvoid:\n" + brief.negativePrompt + "\n\nGlobal quality rules:\nUltra photorealistic architectural visualisation, magazine quality.\nBelievable scale and correct one-point/two-point perspective.\nSharp focus on the building, natural depth of field in the background.\nPhysically accurate shadows, ambient occlusion, and reflections.\nHigh dynamic range lighting (no blown-out sky, no crushed shadows).\nCrisp, high-resolution material textures.\nNo warped geometry, no melted edges, no duplicated structural elements.\nNo random extra doors or windows.\nNo fantasy elements unless explicitly requested.\nPreserve the supplied design intent exactly.";
+  return [
+    "ARCHITECTURAL RENDER BRIEF — Ultra photorealistic, magazine quality. Houses magazine standard.",
+    "",
+    brief.cleanPrompt,
+    "",
+    "Camera:",
+    brief.camera || "Eye-level, slight upward tilt, two-point perspective.",
+    "",
+    "Materials:",
+    brief.materials,
+    "",
+    "Site context:",
+    brief.siteContext,
+    "",
+    "Lighting:",
+    brief.lighting,
+    "",
+    "Must preserve exactly:",
+    preserveList,
+    "",
+    "Do not produce:",
+    brief.negativePrompt,
+    "",
+    "Global quality rules:",
+    "Ultra photorealistic architectural visualisation, magazine quality.",
+    "Believable scale and correct one-point/two-point perspective.",
+    "Sharp focus on the building, natural depth of field in the background.",
+    "Physically accurate shadows, ambient occlusion, and reflections.",
+    "High dynamic range lighting — no blown-out sky, no crushed shadows.",
+    "Crisp, high-resolution material textures at correct scale.",
+    "No warped geometry, no melted edges, no duplicated structural elements.",
+    "No random extra doors or windows.",
+    "No fantasy elements unless explicitly requested.",
+    "Preserve the supplied design intent exactly.",
+  ].join("\n");
 }
 
 app.get("/", (req, res) => {
@@ -123,7 +157,7 @@ app.post("/api/render", async (req, res) => {
     const { prompt, imageBase64 } = req.body;
     if (!prompt) return res.status(400).json({ error: "Missing prompt." });
 
-    let finalPrompt = prompt + ". Photorealistic architectural visualization, faithful to the supplied design. Real materials, natural daylight, accurate proportions. Do not redesign, restyle, or invent elements not present.";
+    let finalPrompt = prompt + ". Ultra photorealistic architectural visualization, magazine quality. Faithful to the supplied design. Real materials, natural daylight, accurate proportions. Do not redesign, restyle, or invent elements not present.";
     let brief = null;
     try {
       brief = await buildBrain({ userPrompt: prompt, renderMode: "image", uploadedImageBase64: imageBase64 });
@@ -137,7 +171,7 @@ app.post("/api/render", async (req, res) => {
       ...(imageBase64 ? [{ type: "input_image", image_url: imageBase64.startsWith("data:") ? imageBase64 : "data:image/png;base64," + imageBase64 }] : [])
     ] }];
 
-    const baseTool = { type: "image_generation", quality: "medium", size: "1024x1024" };
+    const baseTool = { type: "image_generation", quality: "high", size: "1536x1024" };
 
     let response;
     try {
@@ -159,16 +193,61 @@ app.post("/api/render", async (req, res) => {
 });
 
 app.post("/render", async (req, res) => {
-  req.setTimeout(110000);
-  res.setTimeout(110000);
+  req.setTimeout(120000);
+  res.setTimeout(120000);
   try {
     const { prompt, imageBase64, mode = "render" } = req.body || {};
     if (!imageBase64) return res.status(400).json({ ok: false, error: "Upload an image first." });
 
     const isInterior = mode === "interior";
     const finalPrompt = isInterior
-      ? "IMPORTANT: This is an INTERIOR SPACE. You are looking INSIDE a building, not at the outside. There is NO exterior view. Treat this as an indoor architectural photograph. Preserve exactly: the room shape, ceiling, floor, walls, furniture positions, windows as seen from inside. Enhance: interior lighting (lamps, ceiling lights, natural light through windows), material finishes on floors walls and ceiling, furniture quality, soft furnishings, plants and accessories. Make it look like a high quality interior design photograph shot inside the room. Do NOT show any building exterior, facade, landscape or sky. User brief: " + (prompt || "Create a photorealistic interior architectural render.")
-      : "Photorealistic architectural visualisation. Preserve the building design exactly. Improve materials, lighting, landscape and realism without redesigning. User brief: " + (prompt || "Create a realistic architectural render.");
+      ? [
+          "IMPORTANT: This is an INTERIOR SPACE. You are looking INSIDE a building.",
+          "There is NO exterior view. Treat this as a high-end interior design photograph shot inside the room.",
+          "",
+          "Preserve EXACTLY: room shape, ceiling height and form, floor area, wall positions,",
+          "window and door positions as seen from inside, furniture layout and scale.",
+          "",
+          "Enhance with restraint: interior lighting quality (pendant lights, recessed lighting,",
+          "natural light through windows casting correct shadows), material finishes on floors",
+          "walls and ceiling (named and honest — polished concrete, oiled timber, honed stone),",
+          "furniture quality and soft furnishings, plants and curated accessories.",
+          "",
+          "Lighting: warm, layered interior light. Correct shadows from each light source.",
+          "Natural light from windows should feel directional and physically correct.",
+          "",
+          "Quality standard: ultra photorealistic, Houses magazine interior photography.",
+          "Physically accurate reflections on floors. Correct perspective — no fisheye.",
+          "Sharp focus on the space. No blown highlights. Rich shadow detail.",
+          "",
+          "Do NOT show any building exterior, facade, landscape or sky.",
+          "Do NOT redesign the room, add walls, change the ceiling, or move the windows.",
+          "Do NOT add furniture not present in the source image.",
+          "",
+          "User brief: " + (prompt || "Create a photorealistic interior architectural render."),
+        ].join("\n")
+      : [
+          "Ultra photorealistic architectural visualisation. Magazine quality. Houses magazine standard.",
+          "",
+          "Preserve the building design EXACTLY as supplied:",
+          "- All massing, rooflines, and floor counts unchanged",
+          "- All window and door positions, sizes, and proportions unchanged",
+          "- All structural rhythm and material zones unchanged",
+          "- Footprint and site relationship unchanged",
+          "",
+          "Enhance with restraint:",
+          "- Realistic named materials (board-marked concrete, oiled timber, colorbond steel)",
+          "- Warm Australian golden-hour lighting, physically accurate shadows",
+          "- Native Australian planting at correct scale, never obscuring the building",
+          "- Truthful site context — suburban or rural Australian setting as appropriate",
+          "",
+          "Quality: physically accurate shadows and ambient occlusion, correct perspective,",
+          "high dynamic range (no blown sky, no crushed shadows), crisp material textures.",
+          "",
+          "Do NOT redesign, restyle, add windows, change the roofline, or invent elements.",
+          "",
+          "User brief: " + (prompt || "Create a realistic architectural render."),
+        ].join("\n");
 
     const imageBuffer = Buffer.from(imageBase64, "base64");
     const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
@@ -248,7 +327,6 @@ app.post("/api/video", async (req, res) => {
     console.log("FULL uploadData:", JSON.stringify(uploadData));
 
     if (!uploadInit.ok || !uploadData.runwayUri) {
-
       console.error("Runway upload init failed:", JSON.stringify(uploadData));
       return res.status(500).json({ error: "Upload init failed.", detail: JSON.stringify(uploadData) });
     }
@@ -271,14 +349,11 @@ app.post("/api/video", async (req, res) => {
 
     const runwayUri = uploadData.runwayUri;
 
-
     // Step 3: Submit video job
     const isInterior = mode === "interior";
     const motion = isInterior
-  ? prompt + ". Smooth cinematic walkthrough panning across the room with a gentle forward drift. Keep the room unchanged. Realistic architectural interior walkthrough."
-  : prompt + ". Smooth cinematic orbit around the building, wide to close, gentle push in. Keep the building unchanged. Realistic architectural exterior walkthrough.";
-
-
+      ? String(prompt) + ". Smooth cinematic walkthrough panning across the room with a gentle forward drift. Keep the room unchanged. Realistic architectural interior walkthrough."
+      : String(prompt) + ". Smooth cinematic orbit around the building, wide to close, gentle push in. Keep the building unchanged. Realistic architectural exterior walkthrough.";
 
     const r = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
       method: "POST",
