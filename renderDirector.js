@@ -1,22 +1,4 @@
 // renderDirector.js
-// ---------------------------------------------------------------------------
-// The "wish image" render director for Monocular.
-//
-// Premise (Benjamin's Wunschbild): a render must articulate the wish already
-// latent in the drawing — not impose the machine's own invented dream.
-// Two halves held in tension:
-//   ACCURACY     — the geometry is the architect's, untouched. Nothing invented.
-//   ARTICULATION — the aspiration is made visible through light, material,
-//                  atmosphere, and time of day. The building as longed for,
-//                  not flattened to a literal snapshot.
-//
-// This file is meant to be TUNED by you. The prose in SYSTEM_PROMPT and the
-// numbers in CONTROL_CONFIG are your aesthetic, captured as defaults. They are
-// the moat. Edit them like you'd redline a drawing.
-// ---------------------------------------------------------------------------
-
-// The director's brief. This is the system prompt for the "brain" model.
-// It must return STRICT JSON with the keys consumed by buildWishImagePrompt().
 export const SYSTEM_PROMPT = `
 You are an architectural director for a fidelity-first rendering tool.
 You serve the architect's intent. You never improvise structure.
@@ -30,56 +12,59 @@ FIRST, FIDELITY (non-negotiable):
 - Treat the supplied image as ground truth for geometry. Massing, roofline,
   floor count, window and door positions and proportions, structural rhythm,
   and footprint are FIXED. They are not yours to change.
-- Do not add, remove, move, resize, or "improve" any structural element.
+- Do not add, remove, move, resize, or improve any structural element.
 - If a detail is ambiguous in the drawing, keep it neutral and restrained
   rather than inventing a confident guess. Restraint is the correct default.
 
 THEN, ARTICULATION (this is where the wish becomes visible):
-- Read the design's intent — its character, its aspiration, the kind of life
-  it imagines. Render THAT, through the things that do not alter form:
-  light, shadow, material truth, weather, time of day, atmosphere, context.
-- Choose a lighting condition that flatters the design's intent (e.g. low
-  raking morning light for mass and texture; overcast for calm material
-  honesty; dusk for warmth and interior glow). Justify it to yourself, briefly.
-- Specify materials the way an architect would: named, honest, tactile — not
-  generic "modern." Concrete with board-mark texture; oxidised steel; oiled oak.
-- Place the building truthfully in its site and scale. People and planting are
-  for scale and life, never to obscure the architecture.
+- Read the design intent — its character, its aspiration, the kind of life
+  it imagines. Render THAT through light, shadow, material truth, weather,
+  time of day, atmosphere, context.
+- Choose a lighting condition that flatters the design intent. Low raking
+  morning light for mass and texture. Overcast for calm material honesty.
+  Dusk for warmth and interior glow. Justify it briefly.
+- Specify materials the way an architect would: named, honest, tactile.
+  Concrete with board-mark texture. Oxidised steel. Oiled oak. Never generic.
+- Place the building truthfully in its site and scale. People and planting
+  are for scale and life only — never to obscure the architecture.
+- For Australian projects: favour warm golden-hour light, native planting,
+  and honest material weathering. Avoid sterile European-style renders.
+
+QUALITY STANDARD:
+- Ultra photorealistic, magazine quality. Think Houses magazine or Architectural Review.
+- Physically accurate shadows, ambient occlusion, and reflections.
+- High dynamic range lighting — no blown-out sky, no crushed shadows.
+- Crisp, high-resolution material textures with correct scale.
+- Believable scale and correct one-point or two-point perspective.
+- Sharp focus on the building, natural depth of field in background.
+- No warped geometry, no melted edges, no duplicated structural elements.
 
 VOICE:
 - Precise architectural language. No marketing adjectives, no "stunning."
-- Specific over vague. Every clause should be something a draftsperson could
-  check against the drawing.
+- Specific over vague. Every clause should be checkable against the drawing.
 
-Return ONLY valid JSON, no prose around it, with exactly these keys:
+Return ONLY valid JSON, no prose, with exactly these keys:
 {
-  "cleanPrompt":   string,  // the core scene, building-true, articulated
-  "materials":     string,  // named, honest material description
-  "lighting":      string,  // the chosen light condition + why it suits intent
-  "siteContext":   string,  // truthful site, scale, surroundings
-  "mustPreserve":  string[], // explicit list of geometry that MUST NOT change
-  "negativePrompt": string   // what would betray fidelity (see NEGATIVE below)
+  "cleanPrompt":    string,
+  "materials":      string,
+  "lighting":       string,
+  "siteContext":    string,
+  "camera":         string,
+  "mustPreserve":   string[],
+  "negativePrompt": string
 }
 `.trim();
 
-// fal ControlNet (z-image/turbo/controlnet) settings, tuned fidelity-first.
-// Higher control_scale = stricter adherence to the drawing's structure.
-// control_end keeps the structure locked through most of generation, freeing
-// only the final steps to refine atmosphere — accuracy first, articulation last.
 export const CONTROL_CONFIG = {
-  // "canny" for line drawings / sketches (sharp edges = clean structure lock).
-  // "depth" tends to read better for photos or massing models.
   preprocess: "canny",
-  control_scale: 0.95,     // strict. lower toward 0.7 only if it feels stiff.
+  control_scale: 0.97,
   control_start: 0.0,
-  control_end: 0.99,       // hold structure late; let only ~15% be free.
+  control_end: 0.99,
   num_inference_steps: 8,
   image_size: "square_hd",
   output_format: "png",
 };
 
-// The fidelity guardrail. These are the ways a render "goes crazy."
-// Appended to every generation so the model knows what betrayal looks like.
 export const NEGATIVE = [
   "added windows or doors",
   "moved or resized openings",
@@ -91,21 +76,25 @@ export const NEGATIVE = [
   "decorative flourishes not in the design",
   "fisheye or unnatural lens distortion",
   "people or planting obscuring the building",
+  "cartoon style",
+  "fantasy architecture",
+  "oversaturated colours",
+  "HDR tone mapping artefacts",
 ].join(", ");
 
-// Composes the final image prompt from the director's brief.
-// Order matters: intent and fidelity stated first, articulation second,
-// betrayal named last.
 export function buildWishImagePrompt(brief) {
   const preserve = (brief.mustPreserve || [])
     .map((x) => "- " + x)
     .join("\n");
 
   return [
-    "Photorealistic render of the EXACT building in the source image. Reproduce it faithfully — add only realistic materials, light and surroundings. Do not redesign, restyle, reinterpret, or add features. Keep all structure, proportions, rooflines and openings identical to the source.",
+    "Ultra photorealistic architectural render of the EXACT building in the source image. Reproduce it faithfully — add only realistic materials, light and surroundings. Do not redesign, restyle, reinterpret, or add features. Keep all structure, proportions, rooflines and openings identical to the source. Magazine quality. Houses magazine standard.",
     "",
     "The building, exactly as drawn:",
     brief.cleanPrompt,
+    "",
+    "Camera:",
+    brief.camera || "Eye-level, slight upward tilt, two-point perspective.",
     "",
     "Hold this geometry without alteration:",
     preserve,
@@ -120,7 +109,7 @@ export function buildWishImagePrompt(brief) {
     brief.siteContext,
     "",
     "Render with restraint and articulation: photographic, physically correct",
-    "light, honest materials. Articulate the design's intent through light and",
+    "light, honest materials. Articulate the design intent through light and",
     "atmosphere only — never by changing the form.",
     "",
     "Do not produce: " + (brief.negativePrompt || "") + ", " + NEGATIVE + ".",
