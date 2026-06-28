@@ -275,9 +275,8 @@ app.post("/api/video", async (req, res) => {
     // Step 3: Submit video job
     const isInterior = mode === "interior";
     const motion = isInterior
-      prompt + ". Smooth cinematic walkthrough panning across the room with a gentle forward drift. Keep the room unchanged. Realistic architectural interior walkthrough."
-
-      prompt + ". Smooth cinematic orbit around the building, wide to close, gentle push in. Keep the building unchanged. Realistic architectural exterior walkthrough."
+  ? prompt + ". Smooth cinematic walkthrough panning across the room with a gentle forward drift. Keep the room unchanged. Realistic architectural interior walkthrough."
+  : prompt + ". Smooth cinematic orbit around the building, wide to close, gentle push in. Keep the building unchanged. Realistic architectural exterior walkthrough.";
 
 
 
