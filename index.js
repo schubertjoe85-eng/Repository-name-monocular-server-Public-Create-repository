@@ -1,9 +1,7 @@
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import OpenAI from "openai";
 import Jimp from "jimp";
 import { CONTROL_CONFIG, buildWishImagePrompt, SYSTEM_PROMPT } from "./renderDirector.js";
+import { createClient } from "@supabase/supabase-js";
+import Stripe from "stripe";
 
 dotenv.config();
 
@@ -15,7 +13,11 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
 const PORT = process.env.PORT || 3000;
+
 
 let projectMemory = {
   appName: "Monocular",
@@ -134,6 +136,109 @@ app.post("/api/memory", (req, res) => {
 
 app.get("/api/memory", (req, res) => {
   res.json({ ok: true, projectMemory });
+});
+// Verify a Stripe checkout session and credit the email
+app.post("/api/checkout-success", async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId) return res.status(400).json({ ok: false, error: "Missing sessionId." });
+
+    // Prevent double-crediting the same session
+    const { data: existing } = await supabase
+      .from("stripe_sessions")
+      .select("session_id")
+      .eq("session_id", sessionId)
+      .maybeSingle();
+    if (existing) return res.json({ ok: true, alreadyProcessed: true });
+
+    const session = await stripe.checkout.sessions.retrieve(sessionId, { expand: ["line_items"] });
+    if (session.payment_status !== "paid") {
+      return res.status(400).json({ ok: false, error: "Payment not completed." });
+    }
+
+    const email = session.customer_details?.email || session.customer_email;
+    if (!email) return res.status(400).json({ ok: false, error: "No email on session." });
+
+    // Map price to credit amount
+    const amountTotal = session.amount_total; // in cents
+    let creditsToAdd = 0;
+    if (amountTotal === 200) creditsToAdd = 1;
+    else if (amountTotal === 1200) creditsToAdd = 10;
+    else if (amountTotal === 2900) creditsToAdd = 30;
+    else creditsToAdd = 0;
+
+    if (creditsToAdd === 0) {
+      return res.status(400).json({ ok: false, error: "Unrecognised purchase amount." });
+    }
+
+    const { data: existingCredits } = await supabase
+      .from("credits")
+      .select("balance")
+      .eq("email", email)
+      .maybeSingle();
+
+    const newBalance = (existingCredits?.balance || 0) + creditsToAdd;
+
+    await supabase.from("credits").upsert({
+      email,
+      balance: newBalance,
+      updated_at: new Date().toISOString(),
+    });
+
+    await supabase.from("stripe_sessions").insert({
+      session_id: sessionId,
+      email,
+      credits_added: creditsToAdd,
+    });
+
+    res.json({ ok: true, email, creditsAdded: creditsToAdd, balance: newBalance });
+  } catch (error) {
+    console.error("Checkout success error:", error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Check remaining credits for an email
+app.get("/api/credits/:email", async (req, res) => {
+  try {
+    const email = decodeURIComponent(req.params.email);
+    const { data, error } = await supabase
+      .from("credits")
+      .select("balance")
+      .eq("email", email)
+      .maybeSingle();
+    if (error) throw error;
+    res.json({ ok: true, balance: data?.balance || 0 });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+// Deduct one credit (call this before a render)
+app.post("/api/use-credit", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ ok: false, error: "Missing email." });
+
+    const { data, error } = await supabase
+      .from("credits")
+      .select("balance")
+      .eq("email", email)
+      .maybeSingle();
+    if (error) throw error;
+
+    const balance = data?.balance || 0;
+    if (balance <= 0) {
+      return res.status(402).json({ ok: false, error: "No credits remaining." });
+    }
+
+    const newBalance = balance - 1;
+    await supabase.from("credits").update({ balance: newBalance, updated_at: new Date().toISOString() }).eq("email", email);
+
+    res.json({ ok: true, balance: newBalance });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
 });
 
 app.post("/api/brain", async (req, res) => {
