@@ -1,3 +1,7 @@
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import OpenAI from "openai";
 import Jimp from "jimp";
 import { CONTROL_CONFIG, buildWishImagePrompt, SYSTEM_PROMPT } from "./renderDirector.js";
 import { createClient } from "@supabase/supabase-js";
@@ -17,6 +21,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const PORT = process.env.PORT || 3000;
+
 
 
 let projectMemory = {
