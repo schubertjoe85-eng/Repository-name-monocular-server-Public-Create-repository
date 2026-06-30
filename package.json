@@ -6,10 +6,12 @@
     "start": "node index.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.19.2",
     "jimp": "^0.22.12",
-    "openai": "^5.0.0"
+    "openai": "^5.0.0",
+    "stripe": "^16.0.0"
   }
 }
