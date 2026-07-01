@@ -22,8 +22,6 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 const PORT = process.env.PORT || 3000;
 
-
-
 let projectMemory = {
   appName: "Monocular",
   buildingType: "",
@@ -133,6 +131,7 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({ ok: true, status: "healthy" });
 });
+
 app.get("/privacy.html", (req, res) => {
   res.redirect(301, "https://monocular-opal.vercel.app/privacy.html");
 });
@@ -149,13 +148,12 @@ app.post("/api/memory", (req, res) => {
 app.get("/api/memory", (req, res) => {
   res.json({ ok: true, projectMemory });
 });
-// Verify a Stripe checkout session and credit the email
+
 app.post("/api/checkout-success", async (req, res) => {
   try {
     const { sessionId } = req.body;
     if (!sessionId) return res.status(400).json({ ok: false, error: "Missing sessionId." });
 
-    // Prevent double-crediting the same session
     const { data: existing } = await supabase
       .from("stripe_sessions")
       .select("session_id")
@@ -171,13 +169,11 @@ app.post("/api/checkout-success", async (req, res) => {
     const email = session.customer_details?.email || session.customer_email;
     if (!email) return res.status(400).json({ ok: false, error: "No email on session." });
 
-    // Map price to credit amount
-    const amountTotal = session.amount_total; // in cents
+    const amountTotal = session.amount_total;
     let creditsToAdd = 0;
     if (amountTotal === 200) creditsToAdd = 1;
     else if (amountTotal === 1200) creditsToAdd = 10;
     else if (amountTotal === 2900) creditsToAdd = 30;
-    else creditsToAdd = 0;
 
     if (creditsToAdd === 0) {
       return res.status(400).json({ ok: false, error: "Unrecognised purchase amount." });
@@ -210,7 +206,6 @@ app.post("/api/checkout-success", async (req, res) => {
   }
 });
 
-// Check remaining credits for an email
 app.get("/api/credits/:email", async (req, res) => {
   try {
     const email = decodeURIComponent(req.params.email);
@@ -226,7 +221,6 @@ app.get("/api/credits/:email", async (req, res) => {
   }
 });
 
-// Deduct one credit (call this before a render)
 app.post("/api/use-credit", async (req, res) => {
   try {
     const { email } = req.body;
@@ -425,7 +419,6 @@ app.post("/api/video", async (req, res) => {
     const base64Data = src.startsWith("data:") ? src.split(",")[1] : src;
     const imageBuffer = Buffer.from(base64Data, "base64");
 
-    // Step 1: Get a Runway upload URL
     const uploadInit = await fetch("https://api.dev.runwayml.com/v1/uploads", {
       method: "POST",
       headers: {
@@ -448,7 +441,6 @@ app.post("/api/video", async (req, res) => {
       return res.status(500).json({ error: "Upload init failed.", detail: JSON.stringify(uploadData) });
     }
 
-    // Step 2: Upload the image
     if (uploadData.fields) {
       const formData = new FormData();
       Object.entries(uploadData.fields).forEach(([key, value]) => {
@@ -466,7 +458,6 @@ app.post("/api/video", async (req, res) => {
 
     const runwayUri = uploadData.runwayUri;
 
-    // Step 3: Submit video job
     const isInterior = mode === "interior";
     const motion = isInterior
       ? String(prompt) + ". Smooth cinematic walkthrough panning across the room with a gentle forward drift. Keep the room unchanged. Realistic architectural interior walkthrough."
