@@ -133,6 +133,13 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => {
   res.json({ ok: true, status: "healthy" });
 });
+app.get("/privacy.html", (req, res) => {
+  res.redirect(301, "https://monocular-opal.vercel.app/privacy.html");
+});
+
+app.get("/terms.html", (req, res) => {
+  res.redirect(301, "https://monocular-opal.vercel.app/terms.html");
+});
 
 app.post("/api/memory", (req, res) => {
   projectMemory = { ...projectMemory, ...req.body };
