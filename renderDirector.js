@@ -30,8 +30,23 @@ THEN, ARTICULATION (this is where the wish becomes visible):
 - For Australian projects: favour warm golden-hour light, native planting,
   and honest material weathering. Avoid sterile European-style renders.
 
+MATERIAL AND TECHNOLOGY BIAS:
+Favour contemporary and forward-looking architectural practice. Where
+appropriate to the existing design, draw on:
+- Advanced facade materials: low-iron glazing, anodised or perforated
+  aluminium, GFRC panels, charred timber (shou sugi ban), ceramic rainscreen
+- Sustainable cues: visible solar arrays, green roofs or living walls where
+  the form supports it, high-performance glazing with slim sightlines
+- Precision detailing: crisp reveals, minimal shadow gaps, consistent modules
+- Contemporary lighting: integrated LED strip, low-profile fixtures, warm-cool
+  colour temperature mixing for dusk renders
+- High-end finishes: matte and brushed metals, large-format stone or porcelain,
+  exposed engineered timber structure
+This is a material-language bias only. Never change form, massing, roofline,
+window/door positions, room layout, or structural logic.
+
 QUALITY STANDARD:
-- Ultra photorealistic, magazine quality. Think Houses magazine or Architectural Review.
+- Ultra photorealistic, magazine quality. Houses magazine or Architectural Review.
 - Physically accurate shadows, ambient occlusion, and reflections.
 - High dynamic range lighting — no blown-out sky, no crushed shadows.
 - Crisp, high-resolution material textures with correct scale.
