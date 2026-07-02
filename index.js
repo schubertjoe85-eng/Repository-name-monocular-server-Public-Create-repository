@@ -386,7 +386,90 @@ const SELF_URL = "https://monocular-server.onrender.com/health";
 setInterval(function () {
   fetch(SELF_URL).then(function () {}).catch(function () {});
 }, 600000);
+// ── Render v2 — Nano Banana Pro (Gemini) ────────────────────────────────────
+app.post("/render-nb", async (req, res) => {
+  req.setTimeout(120000);
+  res.setTimeout(120000);
+  try {
+    const { prompt, imageBase64, mode = "render", email } = req.body || {};
 
+    if (!imageBase64) {
+      return res.status(400).json({ ok: false, error: "Upload an image first." });
+    }
+
+    // Same free render guard as /render — shares the same IP counter
+    if (!email) {
+      const ip = getClientIp(req);
+      const used = freeRendersByIp[ip] || 0;
+      if (used >= FREE_RENDER_LIMIT) {
+        return res.status(402).json({
+          ok: false,
+          error: "Free render used. Enter your email and buy credits to continue.",
+        });
+      }
+      freeRendersByIp[ip] = used + 1;
+    }
+
+    const finalPrompt = buildPrompt(prompt, mode);
+    const base64Data = imageBase64.startsWith("data:")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
+
+    const geminiRes = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": process.env.GEMINI_API_KEY,
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: finalPrompt },
+                {
+                  inline_data: {
+                    mime_type: "image/png",
+                    data: base64Data,
+                  },
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            responseModalities: ["IMAGE"],
+          },
+        }),
+      }
+    );
+
+    const data = await geminiRes.json();
+
+    if (!geminiRes.ok) {
+      console.error("Gemini error:", JSON.stringify(data));
+      return res.status(500).json({
+        ok: false,
+        error: data?.error?.message || "Nano Banana render failed.",
+      });
+    }
+
+    // Find the image part in the response
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const imagePart = parts.find((p) => p.inlineData || p.inline_data);
+    const imgData = imagePart?.inlineData?.data || imagePart?.inline_data?.data;
+
+    if (!imgData) {
+      console.error("No image in Gemini response:", JSON.stringify(data).slice(0, 500));
+      return res.status(500).json({ ok: false, error: "No image returned." });
+    }
+
+    return res.json({ ok: true, image: "data:image/png;base64," + imgData });
+  } catch (error) {
+    console.error("Nano Banana render error:", error);
+    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
+  }
+});
 app.listen(PORT, () => {
   console.log("Monocular server running on port " + PORT);
 });
