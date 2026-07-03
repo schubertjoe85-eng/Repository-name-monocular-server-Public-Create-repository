@@ -1,4 +1,4 @@
-import express from "express";
+=import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
@@ -77,6 +77,86 @@ async function clampAspectRatio(imageBuffer) {
 
   console.log("Cropped image for Runway: " + w + "x" + h + " -> " + img.bitmap.width + "x" + img.bitmap.height);
   return await img.getBufferAsync(Jimp.MIME_PNG);
+}
+
+// ── Render engines ──────────────────────────────────────────────────────────
+// Primary: Nano Banana Pro (Gemini 3 Pro Image) at 2K.
+// Fallback: OpenAI gpt-image-1 at 1024.
+
+async function renderWithNanoBanana(finalPrompt, imageBase64) {
+  const base64Data = imageBase64.startsWith("data:")
+    ? imageBase64.split(",")[1]
+    : imageBase64;
+
+  const geminiRes = await fetch(
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": process.env.GEMINI_API_KEY,
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              { text: finalPrompt },
+              {
+                inline_data: {
+                  mime_type: "image/png",
+                  data: base64Data,
+                },
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          responseModalities: ["IMAGE"],
+          imageConfig: {
+            imageSize: "2K",
+          },
+        },
+      }),
+    }
+  );
+
+  const data = await geminiRes.json();
+
+  if (!geminiRes.ok) {
+    throw new Error(data?.error?.message || "Nano Banana render failed.");
+  }
+
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const imagePart = parts.find((p) => p.inlineData || p.inline_data);
+  const imgData = imagePart?.inlineData?.data || imagePart?.inline_data?.data;
+
+  if (!imgData) {
+    throw new Error("No image returned by Nano Banana.");
+  }
+
+  return "data:image/png;base64," + imgData;
+}
+
+async function renderWithOpenAI(finalPrompt, imageBase64) {
+  const base64Data = imageBase64.startsWith("data:")
+    ? imageBase64.split(",")[1]
+    : imageBase64;
+  const imageBuffer = Buffer.from(base64Data, "base64");
+  const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
+
+  const response = await openai.images.edit({
+    model: "gpt-image-1",
+    image: imageFile,
+    prompt: finalPrompt,
+    size: "1024x1024",
+  });
+
+  const imageBase64Out = response?.data?.[0]?.b64_json;
+  if (!imageBase64Out) {
+    throw new Error("No image returned by OpenAI.");
+  }
+
+  return "data:image/png;base64," + imageBase64Out;
 }
 
 function buildPrompt(userPrompt, mode) {
@@ -265,22 +345,17 @@ app.post("/render", async (req, res) => {
     if (!passesFreeRenderGuard(req, res, email, subscriptionActive)) return;
 
     const finalPrompt = buildPrompt(prompt, mode);
-    const imageBuffer = Buffer.from(imageBase64, "base64");
-    const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
 
-    const response = await openai.images.edit({
-      model: "gpt-image-1",
-      image: imageFile,
-      prompt: finalPrompt,
-      size: "1024x1024",
-    });
-
-    const imageBase64Out = response?.data?.[0]?.b64_json;
-    if (!imageBase64Out) {
-      return res.status(500).json({ ok: false, error: "No image returned." });
+    // Primary engine: Nano Banana Pro at 2K. Fallback: OpenAI gpt-image-1.
+    let image;
+    try {
+      image = await renderWithNanoBanana(finalPrompt, imageBase64);
+    } catch (nbError) {
+      console.error("Nano Banana failed, falling back to OpenAI:", nbError.message);
+      image = await renderWithOpenAI(finalPrompt, imageBase64);
     }
 
-    return res.json({ ok: true, image: "data:image/png;base64," + imageBase64Out });
+    return res.json({ ok: true, image });
   } catch (error) {
     console.error("Render error:", error);
     return res.status(500).json({ ok: false, error: error.message || "Render failed." });
@@ -448,60 +523,9 @@ app.post("/render-nb", async (req, res) => {
     if (!passesFreeRenderGuard(req, res, email, subscriptionActive)) return;
 
     const finalPrompt = buildPrompt(prompt, mode);
-    const base64Data = imageBase64.startsWith("data:")
-      ? imageBase64.split(",")[1]
-      : imageBase64;
+    const image = await renderWithNanoBanana(finalPrompt, imageBase64);
 
-    const geminiRes = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": process.env.GEMINI_API_KEY,
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: finalPrompt },
-                {
-                  inline_data: {
-                    mime_type: "image/png",
-                    data: base64Data,
-                  },
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            responseModalities: ["IMAGE"],
-          },
-        }),
-      }
-    );
-
-    const data = await geminiRes.json();
-
-    if (!geminiRes.ok) {
-      console.error("Gemini error:", JSON.stringify(data));
-      return res.status(500).json({
-        ok: false,
-        error: data?.error?.message || "Nano Banana render failed.",
-      });
-    }
-
-    // Find the image part in the response
-    const parts = data?.candidates?.[0]?.content?.parts || [];
-    const imagePart = parts.find((p) => p.inlineData || p.inline_data);
-    const imgData = imagePart?.inlineData?.data || imagePart?.inline_data?.data;
-
-    if (!imgData) {
-      console.error("No image in Gemini response:", JSON.stringify(data).slice(0, 500));
-      return res.status(500).json({ ok: false, error: "No image returned." });
-    }
-
-    return res.json({ ok: true, image: "data:image/png;base64," + imgData });
+    return res.json({ ok: true, image });
   } catch (error) {
     console.error("Nano Banana render error:", error);
     return res.status(500).json({ ok: false, error: error.message || "Render failed." });
