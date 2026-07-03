@@ -7,7 +7,7 @@ import Stripe from "stripe";
 import Jimp from "jimp";
 
 dotenv.config();
-const { runBackdropPass } = require("./backdropPipeline");
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -80,14 +80,11 @@ async function clampAspectRatio(imageBuffer) {
 }
 
 // ── Render engines ──────────────────────────────────────────────────────────
-// Primary: Nano Banana Pro (Gemini 3 Pro Image) at 2K.
-// Fallback: OpenAI gpt-image-1 at 1024.
-// Nano Banana backdrop pass — geometry stays locked to the OpenAI render
-const backdrop = await runBackdropPass({
-  imageBase64: openaiImageB64,   // or imageUrl: openaiImageUrl
-  extraPrompt: req.body.backdropPrompt || ""
-});
-const finalImageB64 = backdrop.base64;
+// /render is a two-pass pipeline:
+//   Pass 1 — gpt-image-1: faithful geometry render (the building).
+//   Pass 2 — Nano Banana Pro: backdrop-only edit at 2K (sky, landscape, context).
+//            Geometry is locked. If this pass fails, the Pass 1 render is used.
+// /render-nb remains the pure single-pass Nano Banana route.
 
 async function renderWithNanoBanana(finalPrompt, imageBase64) {
   const base64Data = imageBase64.startsWith("data:")
@@ -163,6 +160,39 @@ async function renderWithOpenAI(finalPrompt, imageBase64) {
   }
 
   return "data:image/png;base64," + imageBase64Out;
+}
+
+// Pass 2 — Nano Banana backdrop-only edit.
+// Takes the finished gpt-image-1 render and replaces ONLY the backdrop.
+// The building is locked. Also upscales the result to 2K.
+function buildBackdropPrompt(userPrompt) {
+  return [
+    "You are editing an EXISTING architectural render. This is an EDIT, not a new image.",
+    "",
+    "Replace ONLY the sky, landscaping, ground plane and surrounding context.",
+    "Make the backdrop photorealistic: real-estate photography quality, natural",
+    "Australian light, native planting at correct scale, believable suburban or",
+    "rural Australian setting as appropriate to the building.",
+    "",
+    "THE BUILDING IS LOCKED. Preserve it pixel-faithfully:",
+    "- Exact geometry, massing, roofline and floor count",
+    "- Exact window and door positions, sizes and proportions",
+    "- Exact materials, colours and detailing",
+    "- Exact footprint and camera perspective",
+    "",
+    "Do NOT redesign, restyle, extend or decorate the building.",
+    "Do NOT add structures, objects or vegetation attached to or in front of the building.",
+    "Do NOT add text, labels, people, vehicles or fantasy elements.",
+    "No stylised, painterly or inventive treatment — faithful photorealism only.",
+    "",
+    "Backdrop direction from the user (apply to the setting ONLY, never the building): " +
+      (userPrompt || "A natural, truthful setting appropriate to the design."),
+  ].join("\n");
+}
+
+async function nanoBackdropPass(renderedImage, userPrompt) {
+  const backdropPrompt = buildBackdropPrompt(userPrompt);
+  return await renderWithNanoBanana(backdropPrompt, renderedImage);
 }
 
 function buildPrompt(userPrompt, mode) {
@@ -336,9 +366,13 @@ app.post("/api/use-credit", async (req, res) => {
   }
 });
 
+// ── Render v1 — two-pass pipeline ───────────────────────────────────────────
+// Pass 1: gpt-image-1 (faithful geometry). Pass 2: Nano Banana backdrop @ 2K.
+// Interior mode: single pass (gpt-image-1 only — no backdrop to replace).
+// If the backdrop pass fails, the Pass 1 render is returned untouched.
 app.post("/render", async (req, res) => {
-  req.setTimeout(120000);
-  res.setTimeout(120000);
+  req.setTimeout(180000);
+  res.setTimeout(180000);
   try {
     const { prompt, imageBase64, mode = "render", email, subscriptionActive } = req.body || {};
 
@@ -352,18 +386,51 @@ app.post("/render", async (req, res) => {
 
     const finalPrompt = buildPrompt(prompt, mode);
 
-    // Primary engine: Nano Banana Pro at 2K. Fallback: OpenAI gpt-image-1.
-    let image;
+    // Pass 1 — geometry render with gpt-image-1.
+    const baseRender = await renderWithOpenAI(finalPrompt, imageBase64);
+
+    // Interior renders have no backdrop — return the Pass 1 render.
+    if (mode === "interior") {
+      return res.json({ ok: true, image: baseRender });
+    }
+
+    // Pass 2 — Nano Banana backdrop-only edit at 2K.
+    // Failsafe: any error here returns the Pass 1 render instead.
+    let image = baseRender;
     try {
-      image = await renderWithNanoBanana(finalPrompt, imageBase64);
-    } catch (nbError) {
-      console.error("Nano Banana failed, falling back to OpenAI:", nbError.message);
-      image = await renderWithOpenAI(finalPrompt, imageBase64);
+      image = await nanoBackdropPass(baseRender, prompt);
+    } catch (backdropError) {
+      console.error("Backdrop pass failed, returning base render:", backdropError.message);
     }
 
     return res.json({ ok: true, image });
   } catch (error) {
     console.error("Render error:", error);
+    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
+  }
+});
+
+// ── Render v2 — pure Nano Banana Pro (single pass) ──────────────────────────
+app.post("/render-nb", async (req, res) => {
+  req.setTimeout(120000);
+  res.setTimeout(120000);
+  try {
+    const { prompt, imageBase64, mode = "render", email, subscriptionActive } = req.body || {};
+
+    if (!imageBase64) {
+      return res.status(400).json({ ok: false, error: "Upload an image first." });
+    }
+
+    // Same free render guard as /render — shares the same IP counter.
+    // Skipped for web credits users (email) and iOS subscribers (subscriptionActive).
+    if (!passesFreeRenderGuard(req, res, email, subscriptionActive)) return;
+
+    const finalPrompt = buildPrompt(prompt, mode);
+    const image = await renderWithNanoBanana(finalPrompt, imageBase64);
+
+    return res.json({ ok: true, image });
+  } catch (error) {
+    console.error("Nano Banana render error:", error);
     return res.status(500).json({ ok: false, error: error.message || "Render failed." });
   }
 });
@@ -513,30 +580,7 @@ const SELF_URL = "https://monocular-server.onrender.com/health";
 setInterval(function () {
   fetch(SELF_URL).then(function () {}).catch(function () {});
 }, 600000);
-// ── Render v2 — Nano Banana Pro (Gemini) ────────────────────────────────────
-app.post("/render-nb", async (req, res) => {
-  req.setTimeout(120000);
-  res.setTimeout(120000);
-  try {
-    const { prompt, imageBase64, mode = "render", email, subscriptionActive } = req.body || {};
 
-    if (!imageBase64) {
-      return res.status(400).json({ ok: false, error: "Upload an image first." });
-    }
-
-    // Same free render guard as /render — shares the same IP counter.
-    // Skipped for web credits users (email) and iOS subscribers (subscriptionActive).
-    if (!passesFreeRenderGuard(req, res, email, subscriptionActive)) return;
-
-    const finalPrompt = buildPrompt(prompt, mode);
-    const image = await renderWithNanoBanana(finalPrompt, imageBase64);
-
-    return res.json({ ok: true, image });
-  } catch (error) {
-    console.error("Nano Banana render error:", error);
-    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
-  }
-});
 app.listen(PORT, () => {
   console.log("Monocular server running on port " + PORT);
 });
