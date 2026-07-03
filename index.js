@@ -30,6 +30,25 @@ function getClientIp(req) {
   );
 }
 
+// Free render guard, shared by /render and /render-nb.
+// Skipped when the caller identifies as a web credits user (email)
+// or an iOS subscriber (subscriptionActive === true from the app).
+// Returns true if the request may proceed, false if it was blocked.
+function passesFreeRenderGuard(req, res, email, subscriptionActive) {
+  if (email || subscriptionActive === true) return true;
+  const ip = getClientIp(req);
+  const used = freeRendersByIp[ip] || 0;
+  if (used >= FREE_RENDER_LIMIT) {
+    res.status(402).json({
+      ok: false,
+      error: "Free render used. Enter your email and buy credits to continue.",
+    });
+    return false;
+  }
+  freeRendersByIp[ip] = used + 1;
+  return true;
+}
+
 function buildPrompt(userPrompt, mode) {
   if (mode === "interior") {
     return [
@@ -205,25 +224,15 @@ app.post("/render", async (req, res) => {
   req.setTimeout(120000);
   res.setTimeout(120000);
   try {
-    const { prompt, imageBase64, mode = "render", email } = req.body || {};
+    const { prompt, imageBase64, mode = "render", email, subscriptionActive } = req.body || {};
 
     if (!imageBase64) {
       return res.status(400).json({ ok: false, error: "Upload an image first." });
     }
 
     // Server-side free render guard.
-    // No email supplied = free render — limit by IP.
-    if (!email) {
-      const ip = getClientIp(req);
-      const used = freeRendersByIp[ip] || 0;
-      if (used >= FREE_RENDER_LIMIT) {
-        return res.status(402).json({
-          ok: false,
-          error: "Free render used. Enter your email and buy credits to continue.",
-        });
-      }
-      freeRendersByIp[ip] = used + 1;
-    }
+    // Skipped for web credits users (email) and iOS subscribers (subscriptionActive).
+    if (!passesFreeRenderGuard(req, res, email, subscriptionActive)) return;
 
     const finalPrompt = buildPrompt(prompt, mode);
     const imageBuffer = Buffer.from(imageBase64, "base64");
@@ -391,24 +400,15 @@ app.post("/render-nb", async (req, res) => {
   req.setTimeout(120000);
   res.setTimeout(120000);
   try {
-    const { prompt, imageBase64, mode = "render", email } = req.body || {};
+    const { prompt, imageBase64, mode = "render", email, subscriptionActive } = req.body || {};
 
     if (!imageBase64) {
       return res.status(400).json({ ok: false, error: "Upload an image first." });
     }
 
-    // Same free render guard as /render — shares the same IP counter
-    if (!email) {
-      const ip = getClientIp(req);
-      const used = freeRendersByIp[ip] || 0;
-      if (used >= FREE_RENDER_LIMIT) {
-        return res.status(402).json({
-          ok: false,
-          error: "Free render used. Enter your email and buy credits to continue.",
-        });
-      }
-      freeRendersByIp[ip] = used + 1;
-    }
+    // Same free render guard as /render — shares the same IP counter.
+    // Skipped for web credits users (email) and iOS subscribers (subscriptionActive).
+    if (!passesFreeRenderGuard(req, res, email, subscriptionActive)) return;
 
     const finalPrompt = buildPrompt(prompt, mode);
     const base64Data = imageBase64.startsWith("data:")
