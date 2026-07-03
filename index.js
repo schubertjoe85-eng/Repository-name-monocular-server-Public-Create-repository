@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
+import Jimp from "jimp";
 
 dotenv.config();
 
@@ -47,6 +48,35 @@ function passesFreeRenderGuard(req, res, email, subscriptionActive) {
   }
   freeRendersByIp[ip] = used + 1;
   return true;
+}
+
+// Runway rejects images with width/height outside 0.5–2.0.
+// Center-crop just enough to bring the image inside that range.
+// Returns a PNG buffer, untouched if already valid.
+async function clampAspectRatio(imageBuffer) {
+  const img = await Jimp.read(imageBuffer);
+  const w = img.bitmap.width;
+  const h = img.bitmap.height;
+  const ratio = w / h;
+
+  if (ratio >= 0.5 && ratio <= 2.0) {
+    return imageBuffer;
+  }
+
+  if (ratio < 0.5) {
+    // Too tall — trim top and bottom.
+    const newH = Math.floor(w / 0.5);
+    const y = Math.floor((h - newH) / 2);
+    img.crop(0, y, w, newH);
+  } else {
+    // Too wide — trim left and right.
+    const newW = Math.floor(h * 2.0);
+    const x = Math.floor((w - newW) / 2);
+    img.crop(x, 0, newW, h);
+  }
+
+  console.log("Cropped image for Runway: " + w + "x" + h + " -> " + img.bitmap.width + "x" + img.bitmap.height);
+  return await img.getBufferAsync(Jimp.MIME_PNG);
 }
 
 function buildPrompt(userPrompt, mode) {
@@ -266,7 +296,14 @@ app.post("/api/video", async (req, res) => {
 
     const src = imageList[0];
     const base64Data = src.startsWith("data:") ? src.split(",")[1] : src;
-    const imageBuffer = Buffer.from(base64Data, "base64");
+    let imageBuffer = Buffer.from(base64Data, "base64");
+
+    // Runway requires width/height between 0.5 and 2.0 — crop if needed.
+    try {
+      imageBuffer = await clampAspectRatio(imageBuffer);
+    } catch (cropError) {
+      console.error("Aspect ratio clamp failed, using original image:", cropError.message);
+    }
 
     const uploadInit = await fetch("https://api.dev.runwayml.com/v1/uploads", {
       method: "POST",
