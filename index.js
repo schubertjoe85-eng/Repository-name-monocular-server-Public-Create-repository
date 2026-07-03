@@ -7,7 +7,7 @@ import Stripe from "stripe";
 import Jimp from "jimp";
 
 dotenv.config();
-
+const { runBackdropPass } = require("./backdropPipeline");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -82,6 +82,12 @@ async function clampAspectRatio(imageBuffer) {
 // ── Render engines ──────────────────────────────────────────────────────────
 // Primary: Nano Banana Pro (Gemini 3 Pro Image) at 2K.
 // Fallback: OpenAI gpt-image-1 at 1024.
+// Nano Banana backdrop pass — geometry stays locked to the OpenAI render
+const backdrop = await runBackdropPass({
+  imageBase64: openaiImageB64,   // or imageUrl: openaiImageUrl
+  extraPrompt: req.body.backdropPrompt || ""
+});
+const finalImageB64 = backdrop.base64;
 
 async function renderWithNanoBanana(finalPrompt, imageBase64) {
   const base64Data = imageBase64.startsWith("data:")
