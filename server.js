@@ -17,10 +17,11 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// ── Free render tracking (server-side, by IP) ────────────────────────────────
+// ── Free render tracking (server-side) ───────────────────────────────────────
+// Keyed by identity: the email/user ID when supplied, otherwise the client IP.
 // In-memory: resets on Render restart. Good enough as a soft guard;
 // move to Supabase later if abuse becomes a problem.
-const freeRendersByIp = {};
+const freeRenders = {};
 const FREE_RENDER_LIMIT = 1;
 
 function getClientIp(req) {
@@ -29,6 +30,27 @@ function getClientIp(req) {
     req.socket.remoteAddress ||
     "unknown"
   );
+}
+
+// A stable identity for the free-render guard. iOS sends the RevenueCat app
+// user ID in the email field; web sends a real email (or nothing for guests).
+function getIdentity(req, email) {
+  return email ? "id:" + email : "ip:" + getClientIp(req);
+}
+
+// Look up the credit balance for an email. Returns 0 on any failure.
+async function getCreditBalance(email) {
+  if (!email) return 0;
+  try {
+    const { data } = await supabase
+      .from("credits")
+      .select("balance")
+      .eq("email", email)
+      .maybeSingle();
+    return data?.balance || 0;
+  } catch (e) {
+    return 0;
+  }
 }
 
 // ── Prompt builder ───────────────────────────────────────────────────────────
@@ -211,24 +233,37 @@ app.post("/render", async (req, res) => {
   req.setTimeout(120000);
   res.setTimeout(120000);
   try {
-    const { prompt, imageBase64, mode = "render", email } = req.body || {};
+    const {
+      prompt,
+      imageBase64,
+      mode = "render",
+      email,
+      subscriptionActive = false,
+    } = req.body || {};
 
     if (!imageBase64) {
       return res.status(400).json({ ok: false, error: "Upload an image first." });
     }
 
-    // Server-side free render guard.
-    // If no email is supplied, this is a free render — limit by IP.
-    if (!email) {
-      const ip = getClientIp(req);
-      const used = freeRendersByIp[ip] || 0;
-      if (used >= FREE_RENDER_LIMIT) {
-        return res.status(402).json({
-          ok: false,
-          error: "Free render used. Enter your email and buy credits to continue.",
-        });
+    // ── Access check ─────────────────────────────────────────────────────────
+    // 1. iOS subscribers (RevenueCat entitlement) render freely.
+    // 2. Web users with a credit balance render freely here — the web
+    //    frontend deducts via /api/use-credit as before.
+    // 3. Everyone else gets FREE_RENDER_LIMIT free renders, tracked by
+    //    email/user ID when supplied, otherwise by IP.
+    if (!subscriptionActive) {
+      const balance = await getCreditBalance(email);
+      if (balance <= 0) {
+        const identity = getIdentity(req, email);
+        const used = freeRenders[identity] || 0;
+        if (used >= FREE_RENDER_LIMIT) {
+          return res.status(402).json({
+            ok: false,
+            error: "Free render used. Subscribe or buy credits to continue.",
+          });
+        }
+        freeRenders[identity] = used + 1;
       }
-      freeRendersByIp[ip] = used + 1;
     }
 
     const finalPrompt = buildPrompt(prompt, mode);
@@ -257,10 +292,23 @@ app.post("/render", async (req, res) => {
 // ── Video (Runway) ───────────────────────────────────────────────────────────
 app.post("/api/video", async (req, res) => {
   try {
-    const { prompt, imageBase64, images, mode = "render" } = req.body;
+    const { prompt, imageBase64, images, mode = "render", email, subscriptionActive = false } = req.body;
     const imageList = Array.isArray(images) && images.length ? images : imageBase64 ? [imageBase64] : [];
     if (!prompt) return res.status(400).json({ ok: false, error: "Missing prompt." });
     if (!imageList.length) return res.status(400).json({ ok: false, error: "Please upload an image." });
+
+    // ── Access check ─────────────────────────────────────────────────────────
+    // Video is never free: iOS subscribers or web users with credits only.
+    // Previously this endpoint had no server-side gate at all.
+    if (!subscriptionActive) {
+      const balance = await getCreditBalance(email);
+      if (balance <= 0) {
+        return res.status(402).json({
+          ok: false,
+          error: "Video generation requires a subscription or credits.",
+        });
+      }
+    }
 
     const src = imageList[0];
     const base64Data = src.startsWith("data:") ? src.split(",")[1] : src;
