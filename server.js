@@ -54,11 +54,13 @@ async function getCreditBalance(email) {
 }
 
 // ── Prompt builder ───────────────────────────────────────────────────────────
-// The render engine is now the Responses API: GPT-5.5 sees the source image
-// in context, reasons about it (typology, storeys, camera, massing), and
-// orchestrates gpt-image-2 via the image_generation tool — the same stack
-// ChatGPT uses. This prompt instructs the mainline model, not the image
-// model directly: analyse first, then edit, changing nothing.
+// Engine: GPT-5.5 (the "director") orchestrating gpt-image-2 via the
+// image_generation tool. The director rewrites our instructions into its own
+// revised_prompt before the image model runs — and left unconstrained it
+// rewrites them as a cinematic scene description (sunset, lakes, bushland).
+// So this prompt constrains BOTH layers: what the final image must preserve,
+// AND what the director is allowed to write in its tool call. The director's
+// prompt must be a fidelity instruction, never a scene description.
 function buildPrompt(userPrompt, mode) {
   if (mode === "interior") {
     return [
@@ -79,6 +81,17 @@ function buildPrompt(userPrompt, mode) {
       "- Same room shape, wall positions, floor area, ceiling height and form",
       "- Every window and door: same count, same positions, same sizes",
       "- Furniture: same pieces, same positions, same scale — nothing added, nothing removed",
+      "",
+      "DIRECTOR RULES — how you must write your prompt for the image generation tool:",
+      "- Your tool prompt is a FIDELITY INSTRUCTION, never a scene description.",
+      "- It must restate as fixed facts: the room type, camera position/angle/framing,",
+      "  and the contents inventory from your analysis.",
+      "- It must instruct: photorealistic materials and lighting only; change nothing else.",
+      "- It must NOT contain atmospheric or lifestyle language: no 'cozy', 'inviting',",
+      "  'sun-drenched', 'designer', no described decor, styling, or mood not present",
+      "  in the source or named in the user brief.",
+      "- Default lighting: neutral daylight consistent with the source. Never invent",
+      "  dramatic lighting.",
       "",
       "ONLY these may be improved:",
       "- Rendering quality of surfaces already present (the timber floor becomes convincing",
@@ -113,19 +126,18 @@ function buildPrompt(userPrompt, mode) {
     "",
     "STEP 1 — ANALYSE the attached image before generating. Establish precisely:",
     "1. BUILDING TYPOLOGY: what type of building this is (high-rise residential tower,",
-    "   detached house, pool house, office building, etc.). Be exact — this is the single",
-    "   most important fact. A tower must NEVER be rendered as a house, and a house must",
-    "   NEVER be rendered as a tower.",
+    "   detached house, pool house, office building, etc.). Be exact — a tower must",
+    "   NEVER be rendered as a house, and a house must NEVER be rendered as a tower.",
     "2. STOREY COUNT: count the visible levels carefully — balcony levels, window rows.",
-    "   The output must contain exactly this many storeys. Never simplify a tall building",
-    "   into a shorter one.",
+    "   The output must contain exactly this many storeys.",
     "3. CAMERA: position, height, lens angle, and tilt. If the source looks steeply",
     "   upward from street level, so does the output. Note the crop: if the building",
     "   fills the frame with the top or base cut off, the output is framed identically.",
     "4. MASSING: every cantilever, setback, twist, and offset in the stacking of",
     "   volumes, in vertical order.",
-    "5. VISIBLE SURROUNDINGS: only what the source actually shows — sky, neighbouring",
-    "   buildings, ground. Note if little or nothing is visible.",
+    "5. VISIBLE SURROUNDINGS AND SKY: only what the source actually shows. Note the",
+    "   sky treatment (blank, white, sketchy wash, blue) and whether any ground,",
+    "   street, or neighbouring building is visible.",
     "",
     "STEP 2 — EDIT the attached image into a photorealistic photograph that preserves",
     "every fact from your analysis:",
@@ -137,25 +149,43 @@ function buildPrompt(userPrompt, mode) {
     "- Every balcony, terrace, and planter: same count, same levels, same positions",
     "- Facade composition and material zones exactly where the source places them",
     "",
+    "DIRECTOR RULES — how you must write your prompt for the image generation tool:",
+    "- Your tool prompt is a FIDELITY INSTRUCTION, never a scene description.",
+    "- It must restate as fixed facts: the typology, the exact storey count, the",
+    "  camera angle and crop, and the massing from your analysis.",
+    "- It must instruct: photorealistic materials, physically correct daylight,",
+    "  same framing; change nothing else.",
+    "- It must NOT contain scenic, atmospheric, or lifestyle language. Banned from",
+    "  your tool prompt unless present in the source or named in the user brief:",
+    "  'golden hour', 'sunset', 'sunrise', 'dusk', 'nestled', 'surrounded by',",
+    "  'set in', 'overlooking', and ANY description of landscape, vegetation,",
+    "  water, terrain, or setting.",
+    "- LIGHTING DEFAULT: neutral clear daytime consistent with the source sky.",
+    "  NEVER default to sunset or golden hour.",
+    "- SKY AND BACKGROUND DEFAULT: match the source. If the source sky is blank,",
+    "  white, or a loose wash, render a plain clear daytime sky and nothing else.",
+    "",
     "ONLY these may be improved:",
     "- Rendering quality of materials already present (the brick becomes convincing brick;",
     "  the cladding becomes convincing cladding — same material, photographed better)",
-    "- Lighting realism: natural daylight, physically correct shadows, honest sky",
+    "- Lighting realism: neutral natural daylight, physically correct shadows",
     "- Photographic quality: sharp focus, high dynamic range — at the SAME camera angle",
     "",
     "SITE CONTEXT: Reproduce only the surroundings the source image actually shows,",
     "in the same positions. If the source shows little or no site, keep the surroundings",
     "minimal and neutral — plain ground plane or sky consistent with the source framing.",
-    "Never invent a setting: no gardens, landscaping, driveways, streetscapes, or",
-    "neighbouring houses that the source does not show. If the user brief names a",
-    "setting (e.g. inner-city, CBD, coastal), follow the brief; otherwise invent nothing.",
+    "Never invent a setting. If the user brief names a setting (e.g. inner-city, CBD,",
+    "coastal), follow the brief; otherwise invent nothing.",
     "",
     "STRICTLY FORBIDDEN unless visible in the source image or named in the user brief:",
     "- Changing the building typology (tower to house, house to tower, etc.)",
     "- Reducing or increasing the number of storeys",
     "- Changing the camera position, angle, lens, or framing",
     "- Zooming out, recentring, or recomposing the shot",
-    "- Invented site context: gardens, landscaping, driveways, fences, or",
+    "- Sunset, sunrise, golden-hour, or dusk lighting",
+    "- Lakes, rivers, ponds, billabongs, or any water body",
+    "- Trees, bushland, gardens, or landscaping of any kind",
+    "- Invented site context: driveways, fences, streetscapes, hills, or",
     "  neighbouring buildings not present in the source",
     "- Solar panels, green roofs, roof gardens, roof decks",
     "- LED strips, feature lighting, uplighting, illuminated signage",
@@ -166,7 +196,7 @@ function buildPrompt(userPrompt, mode) {
     "",
     "IF ANYTHING IS AMBIGUOUS in the source, choose the PLAIN, CONVENTIONAL reading.",
     "Never resolve ambiguity with a striking or designer feature. A plain wall stays",
-    "plain. An empty foreground stays empty.",
+    "plain. An empty foreground stays empty. A blank sky stays a plain daytime sky.",
     "",
     "The user brief may adjust time of day, season, weather, and material finish",
     "quality, and may name a setting. It never changes the building's typology,",
@@ -296,11 +326,9 @@ app.post("/api/use-credit", async (req, res) => {
 
 // ── Render ───────────────────────────────────────────────────────────────────
 // Engine: Responses API — GPT-5.5 orchestrating gpt-image-2 via the
-// image_generation tool with action:"edit". This replicates the ChatGPT
-// Images 2.0 stack: the mainline model analyses the source image in context,
-// revises the generation instructions itself, and gpt-image-2 executes the
-// edit. gpt-image-2 always processes image inputs at high fidelity, so
-// input_fidelity is no longer sent (the API rejects it for this model).
+// image_generation tool with action:"edit". The director's revised_prompt and
+// the incoming user brief are both logged so drift can be traced to its
+// source: frontend style strings vs director embellishment.
 app.post("/render", async (req, res) => {
   req.setTimeout(180000);
   res.setTimeout(180000);
@@ -316,6 +344,11 @@ app.post("/render", async (req, res) => {
     if (!imageBase64) {
       return res.status(400).json({ ok: false, error: "Upload an image first." });
     }
+
+    // Trace exactly what the frontend sends — if renders keep drifting to a
+    // house style the app didn't ask for, this line reveals whether the app
+    // is appending style presets to the brief.
+    console.log("User brief received:", JSON.stringify(prompt), "mode:", mode);
 
     // ── Access check ─────────────────────────────────────────────────────────
     // 1. iOS subscribers (RevenueCat entitlement) render freely.
