@@ -53,28 +53,100 @@ async function getCreditBalance(email) {
   }
 }
 
+// ── Source analysis (vision pre-pass) ────────────────────────────────────────
+// gpt-image-1 classifies the source image itself and its guess wins over any
+// static prompt instruction — a 12-storey sketch tower was rendered as a
+// 4-storey house. Fix: a cheap gpt-4o-mini vision call measures the source
+// FIRST (typology, storeys, camera, massing) and the result is injected into
+// the render prompt as authoritative fact. Returns null on any failure so a
+// vision outage never blocks renders — buildPrompt falls back to the static
+// measure-first instructions.
+async function analyseSource(imageBase64, mode) {
+  const isInterior = mode === "interior";
+  const question = isInterior
+    ? [
+        "Analyse this interior image for an architectural visualisation pipeline.",
+        "Respond ONLY with a JSON object, no markdown, with exactly these keys:",
+        '- "typology": the room type in plain terms, e.g. "open-plan living/kitchen", "bedroom", "bathroom", "indoor pool hall"',
+        '- "camera": one sentence describing the camera position, height, angle, and how much of the room is in frame',
+        '- "contents": one sentence listing the visible furniture and fittings with rough positions',
+        '- "materials": one short sentence naming the visible floor, wall, and ceiling materials',
+      ].join("\n")
+    : [
+        "Analyse this architectural image for a visualisation pipeline.",
+        "Respond ONLY with a JSON object, no markdown, with exactly these keys:",
+        '- "typology": the building type, precise and unambiguous, e.g. "multi-storey high-rise residential tower", "two-storey detached house", "single-storey pool house", "commercial office building". If it is a tower, say tower.',
+        '- "storeys": the number of visible storeys/levels as an integer. Count carefully — count balcony levels and window rows. If the top or bottom is cropped, count what is visible and note the crop in "camera".',
+        '- "camera": one sentence describing the camera position and angle, e.g. "worm\'s-eye view looking steeply upward from street level, building fills the frame, base and top cropped"',
+        '- "massing": one sentence describing the stacking of volumes — cantilevers, setbacks, twists, offsets, in vertical order',
+        '- "setting": one short sentence describing only the surroundings actually visible, e.g. "sky and one low neighbouring building at lower left; no ground plane visible". If nothing is visible, say "none visible".',
+      ].join("\n");
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      max_tokens: 400,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: question },
+            {
+              type: "image_url",
+              image_url: {
+                url: "data:image/png;base64," + imageBase64,
+                detail: "high",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const parsed = JSON.parse(response.choices[0]?.message?.content || "null");
+    console.log("Source analysis:", JSON.stringify(parsed));
+    return parsed;
+  } catch (e) {
+    console.error("Source analysis failed (continuing without):", e.message);
+    return null;
+  }
+}
+
 // ── Prompt builder ───────────────────────────────────────────────────────────
 // Fidelity-first: the model's job is to photograph the supplied design,
-// not to redesign it. The prompt forces a MEASURE step before rendering —
-// storey count, camera angle, and crop are locked to the source. Anything
-// not visible in the source and not requested in the brief must not appear.
-function buildPrompt(userPrompt, mode) {
+// not to redesign it. When a source analysis is available it is injected as
+// authoritative fact — typology, storey count, and camera are stated, not
+// left for gpt-image-1 to guess. Anything not visible in the source and not
+// requested in the brief must not appear.
+function buildPrompt(userPrompt, mode, analysis) {
   if (mode === "interior") {
+    const analysisBlock = analysis
+      ? [
+          "SOURCE ANALYSIS (AUTHORITATIVE — the output MUST match every line):",
+          "- ROOM TYPE: " + analysis.typology + ". Render exactly this room type.",
+          "- CAMERA: " + analysis.camera + ". Use this identical viewpoint and framing.",
+          "- CONTENTS: " + analysis.contents + ". Same items, same positions — nothing added, nothing removed.",
+          "- MATERIALS: " + analysis.materials + ". Same materials, photographed better.",
+          "",
+        ]
+      : [
+          "STEP 1 — MEASURE THE SOURCE before rendering anything. Lock these values:",
+          "1. CAMERA: Note the source camera position, height, lens angle, and tilt.",
+          "   The output uses the IDENTICAL viewpoint. Do not reframe, recentre, or pull",
+          "   back to a standard interior shot.",
+          "2. CROP: The output shows the same portion of the room the source shows.",
+          "3. CONTENTS: Note every window, door, and piece of furniture — count,",
+          "   position, and scale.",
+          "",
+        ];
+
     return [
       "TASK: Convert the supplied interior image into a photograph of that exact room.",
       "You are a camera, not a designer. The room already exists — photograph it faithfully.",
       "This is an INTERIOR SPACE viewed from inside. Show no exterior, facade, or sky.",
       "",
-      "STEP 1 — MEASURE THE SOURCE before rendering anything. Lock these values:",
-      "1. CAMERA: Note the source camera position, height, lens angle, and tilt.",
-      "   The output uses the IDENTICAL viewpoint. Do not reframe, recentre, or pull",
-      "   back to a standard interior shot.",
-      "2. CROP: The output shows the same portion of the room the source shows —",
-      "   no more, no less.",
-      "3. CONTENTS: Note every window, door, and piece of furniture — count,",
-      "   position, and scale.",
-      "",
-      "STEP 2 — RENDER. Geometry is fixed. Reproduce exactly as measured:",
+      ...analysisBlock,
+      "GEOMETRY IS FIXED. Reproduce exactly as shown in the source:",
       "- Room shape, wall positions, floor area",
       "- Ceiling height and form",
       "- Every window and door: same count, same positions, same sizes",
@@ -106,27 +178,45 @@ function buildPrompt(userPrompt, mode) {
   }
 
   // default: exterior render
+  const analysisBlock = analysis
+    ? [
+        "SOURCE ANALYSIS (AUTHORITATIVE — the output MUST match every line):",
+        "- BUILDING TYPOLOGY: " + analysis.typology + ".",
+        "  Render exactly this building type. NEVER substitute a different typology —",
+        "  a tower must never become a house, a house must never become a tower.",
+        "- STOREYS: " + analysis.storeys + " visible storeys. The output contains exactly " + analysis.storeys + " storeys.",
+        "  Never reduce or simplify the storey count.",
+        "- CAMERA: " + analysis.camera + ".",
+        "  Use this identical viewpoint, angle, and framing. Never reframe to a standard",
+        "  eye-level exterior shot, and never zoom out to show more than the source shows.",
+        "- MASSING: " + analysis.massing + ".",
+        "  Preserve every cantilever, setback, twist, and offset in the same vertical order.",
+        "- VISIBLE SURROUNDINGS: " + analysis.setting + ".",
+        "  Reproduce only these surroundings. Invent nothing else.",
+        "",
+      ]
+    : [
+        "STEP 1 — MEASURE THE SOURCE before rendering anything. Lock these values:",
+        "1. STOREY COUNT: Count the visible levels/floors. The output MUST contain the",
+        "   exact same number. Never simplify a tall building into a shorter one.",
+        "2. CAMERA: Note the source camera position, height, lens angle, and tilt.",
+        "   The output uses the IDENTICAL viewpoint. Never reframe to a standard",
+        "   eye-level exterior shot.",
+        "3. CROP: The output shows the same portion of the building the source shows.",
+        "   Never zoom out to show the whole building or site.",
+        "4. MASSING: Note every cantilever, setback, twist, and offset in the stacking",
+        "   of volumes, and their vertical order.",
+        "",
+      ];
+
   return [
     "TASK: Convert the supplied architectural image into a photograph of that exact building,",
     "as if it has been built and professionally photographed.",
     "You are a camera, not a designer. The building is already designed — photograph it faithfully.",
     "",
-    "STEP 1 — MEASURE THE SOURCE before rendering anything. Lock these values:",
-    "1. STOREY COUNT: Count the visible levels/floors in the source. The output MUST",
-    "   contain the exact same number of storeys. Never simplify a tall building into",
-    "   a shorter one. A 12-storey tower stays a 12-storey tower.",
-    "2. CAMERA: Note the source camera position, height, lens angle, and tilt.",
-    "   The output uses the IDENTICAL viewpoint. If the source looks steeply upward",
-    "   from street level, the output looks steeply upward from street level.",
-    "   Never reframe to a standard eye-level exterior shot.",
-    "3. CROP: The output shows the same portion of the building the source shows.",
-    "   If the building fills the frame and its top or base is cut off, the output",
-    "   is framed the same way. Never zoom out to show the whole building or site.",
-    "4. MASSING: Note every cantilever, setback, twist, and offset in the stacking",
-    "   of volumes, and their vertical order.",
-    "",
-    "STEP 2 — RENDER. Geometry is fixed. Reproduce exactly as measured:",
-    "- Storey count, massing, and footprint — identical to the source",
+    ...analysisBlock,
+    "GEOMETRY IS FIXED. Reproduce exactly as shown in the source:",
+    "- Building typology, storey count, massing, and footprint — identical to the source",
     "- Roof form and pitch — no changes, no additions",
     "- Every window and door: same count, same positions, same sizes, same proportions",
     "- Every balcony, terrace, and planter: same count, same levels, same positions",
@@ -139,14 +229,14 @@ function buildPrompt(userPrompt, mode) {
     "- Photographic quality: sharp focus, high dynamic range — at the SAME camera angle",
     "",
     "SITE CONTEXT: Reproduce only the surroundings the source image actually shows,",
-    "in the same positions (neighbouring buildings, streets, footpaths, sky).",
-    "If the source shows little or no site, keep the surroundings minimal and neutral —",
-    "plain ground plane or sky consistent with the source framing. Never invent a",
-    "setting: no gardens, landscaping, driveways, streetscapes, or neighbouring houses",
-    "that the source does not show. If the user brief names a setting (e.g. inner-city,",
-    "CBD, coastal), follow the brief; otherwise invent nothing.",
+    "in the same positions. If the source shows little or no site, keep the surroundings",
+    "minimal and neutral — plain ground plane or sky consistent with the source framing.",
+    "Never invent a setting: no gardens, landscaping, driveways, streetscapes, or",
+    "neighbouring houses that the source does not show. If the user brief names a",
+    "setting (e.g. inner-city, CBD, coastal), follow the brief; otherwise invent nothing.",
     "",
     "STRICTLY FORBIDDEN unless visible in the source image or named in the user brief:",
+    "- Changing the building typology (tower to house, house to tower, etc.)",
     "- Reducing or increasing the number of storeys",
     "- Changing the camera position, angle, lens, or framing",
     "- Zooming out, recentring, or recomposing the shot",
@@ -164,8 +254,8 @@ function buildPrompt(userPrompt, mode) {
     "plain. An empty foreground stays empty.",
     "",
     "The user brief may adjust time of day, season, weather, and material finish",
-    "quality, and may name a setting. It never changes the building's geometry,",
-    "storey count, or the camera.",
+    "quality, and may name a setting. It never changes the building's typology,",
+    "geometry, storey count, or the camera.",
     "User brief: " + (userPrompt || "Photorealistic photograph of this exact building."),
   ].join("\n");
 }
@@ -327,7 +417,11 @@ app.post("/render", async (req, res) => {
       }
     }
 
-    const finalPrompt = buildPrompt(prompt, mode);
+    // Vision pre-pass: measure typology, storeys, camera, massing from the
+    // source so gpt-image-1 is told what it is looking at instead of guessing.
+    const analysis = await analyseSource(imageBase64, mode);
+
+    const finalPrompt = buildPrompt(prompt, mode, analysis);
     const imageBuffer = Buffer.from(imageBase64, "base64");
     const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
 
