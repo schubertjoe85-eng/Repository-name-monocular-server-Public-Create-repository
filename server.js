@@ -53,108 +53,36 @@ async function getCreditBalance(email) {
   }
 }
 
-// ── Source analysis (vision pre-pass) ────────────────────────────────────────
-// gpt-image-2 classifies the source image itself and its guess wins over any
-// static prompt instruction — a 12-storey sketch tower was rendered as a
-// 4-storey house. Fix: a cheap gpt-4o-mini vision call measures the source
-// FIRST (typology, storeys, camera, massing) and the result is injected into
-// the render prompt as authoritative fact. Returns null on any failure so a
-// vision outage never blocks renders — buildPrompt falls back to the static
-// measure-first instructions.
-async function analyseSource(imageBase64, mode) {
-  const isInterior = mode === "interior";
-  const question = isInterior
-    ? [
-        "Analyse this interior image for an architectural visualisation pipeline.",
-        "Respond ONLY with a JSON object, no markdown, with exactly these keys:",
-        '- "typology": the room type in plain terms, e.g. "open-plan living/kitchen", "bedroom", "bathroom", "indoor pool hall"',
-        '- "camera": one sentence describing the camera position, height, angle, and how much of the room is in frame',
-        '- "contents": one sentence listing the visible furniture and fittings with rough positions',
-        '- "materials": one short sentence naming the visible floor, wall, and ceiling materials',
-      ].join("\n")
-    : [
-        "Analyse this architectural image for a visualisation pipeline.",
-        "Respond ONLY with a JSON object, no markdown, with exactly these keys:",
-        '- "typology": the building type, precise and unambiguous, e.g. "multi-storey high-rise residential tower", "two-storey detached house", "single-storey pool house", "commercial office building". If it is a tower, say tower.',
-        '- "storeys": the number of visible storeys/levels as an integer. Count carefully — count balcony levels and window rows. If the top or bottom is cropped, count what is visible and note the crop in "camera".',
-        '- "camera": one sentence describing the camera position and angle, e.g. "worm\'s-eye view looking steeply upward from street level, building fills the frame, base and top cropped"',
-        '- "massing": one sentence describing the stacking of volumes — cantilevers, setbacks, twists, offsets, in vertical order',
-        '- "setting": one short sentence describing only the surroundings actually visible, e.g. "sky and one low neighbouring building at lower left; no ground plane visible". If nothing is visible, say "none visible".',
-      ].join("\n");
-
-  try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      max_tokens: 400,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: question },
-            {
-              type: "image_url",
-              image_url: {
-                url: "data:image/png;base64," + imageBase64,
-                detail: "high",
-              },
-            },
-          ],
-        },
-      ],
-    });
-    const parsed = JSON.parse(response.choices[0]?.message?.content || "null");
-    console.log("Source analysis:", JSON.stringify(parsed));
-    return parsed;
-  } catch (e) {
-    console.error("Source analysis failed (continuing without):", e.message);
-    return null;
-  }
-}
-
 // ── Prompt builder ───────────────────────────────────────────────────────────
-// Fidelity-first: the model's job is to photograph the supplied design,
-// not to redesign it. When a source analysis is available it is injected as
-// authoritative fact — typology, storey count, and camera are stated, not
-// left for gpt-image-1 to guess. Anything not visible in the source and not
-// requested in the brief must not appear.
-function buildPrompt(userPrompt, mode, analysis) {
+// The render engine is now the Responses API: GPT-5.5 sees the source image
+// in context, reasons about it (typology, storeys, camera, massing), and
+// orchestrates gpt-image-2 via the image_generation tool — the same stack
+// ChatGPT uses. This prompt instructs the mainline model, not the image
+// model directly: analyse first, then edit, changing nothing.
+function buildPrompt(userPrompt, mode) {
   if (mode === "interior") {
-    const analysisBlock = analysis
-      ? [
-          "SOURCE ANALYSIS (AUTHORITATIVE — the output MUST match every line):",
-          "- ROOM TYPE: " + analysis.typology + ". Render exactly this room type.",
-          "- CAMERA: " + analysis.camera + ". Use this identical viewpoint and framing.",
-          "- CONTENTS: " + analysis.contents + ". Same items, same positions — nothing added, nothing removed.",
-          "- MATERIALS: " + analysis.materials + ". Same materials, photographed better.",
-          "",
-        ]
-      : [
-          "STEP 1 — MEASURE THE SOURCE before rendering anything. Lock these values:",
-          "1. CAMERA: Note the source camera position, height, lens angle, and tilt.",
-          "   The output uses the IDENTICAL viewpoint. Do not reframe, recentre, or pull",
-          "   back to a standard interior shot.",
-          "2. CROP: The output shows the same portion of the room the source shows.",
-          "3. CONTENTS: Note every window, door, and piece of furniture — count,",
-          "   position, and scale.",
-          "",
-        ];
-
     return [
-      "TASK: Convert the supplied interior image into a photograph of that exact room.",
-      "You are a camera, not a designer. The room already exists — photograph it faithfully.",
+      "You are an architectural visualisation engine. Your job is to convert the attached",
+      "interior image into a photograph of that EXACT room — as if the room has been built",
+      "and professionally photographed. You are a camera, not a designer.",
       "This is an INTERIOR SPACE viewed from inside. Show no exterior, facade, or sky.",
       "",
-      ...analysisBlock,
-      "GEOMETRY IS FIXED. Reproduce exactly as shown in the source:",
-      "- Room shape, wall positions, floor area",
-      "- Ceiling height and form",
+      "STEP 1 — ANALYSE the attached image before generating. Establish precisely:",
+      "1. ROOM TYPE: what kind of room this is (living room, bedroom, indoor pool hall, etc.)",
+      "2. CAMERA: position, height, lens angle, tilt, and how much of the room is in frame",
+      "3. CONTENTS: every window, door, and piece of furniture — count, position, scale",
+      "4. MATERIALS: the visible floor, wall, and ceiling finishes",
+      "",
+      "STEP 2 — EDIT the attached image into a photorealistic photograph that preserves",
+      "every fact from your analysis:",
+      "- IDENTICAL camera position, angle, and framing — never reframe or pull back",
+      "- Same room shape, wall positions, floor area, ceiling height and form",
       "- Every window and door: same count, same positions, same sizes",
       "- Furniture: same pieces, same positions, same scale — nothing added, nothing removed",
       "",
       "ONLY these may be improved:",
       "- Rendering quality of surfaces already present (the timber floor becomes convincing",
-      "  timber; the plasterboard wall becomes convincing plasterboard)",
+      "  timber; the plasterboard wall becomes convincing plasterboard — same material)",
       "- Lighting realism: natural light through the existing windows, existing light",
       "  fittings switched on, physically correct shadows",
       "- Photographic quality: sharp focus, honest exposure — at the SAME camera position",
@@ -178,46 +106,33 @@ function buildPrompt(userPrompt, mode, analysis) {
   }
 
   // default: exterior render
-  const analysisBlock = analysis
-    ? [
-        "SOURCE ANALYSIS (AUTHORITATIVE — the output MUST match every line):",
-        "- BUILDING TYPOLOGY: " + analysis.typology + ".",
-        "  Render exactly this building type. NEVER substitute a different typology —",
-        "  a tower must never become a house, a house must never become a tower.",
-        "- STOREYS: " + analysis.storeys + " visible storeys. The output contains exactly " + analysis.storeys + " storeys.",
-        "  Never reduce or simplify the storey count.",
-        "- CAMERA: " + analysis.camera + ".",
-        "  Use this identical viewpoint, angle, and framing. Never reframe to a standard",
-        "  eye-level exterior shot, and never zoom out to show more than the source shows.",
-        "- MASSING: " + analysis.massing + ".",
-        "  Preserve every cantilever, setback, twist, and offset in the same vertical order.",
-        "- VISIBLE SURROUNDINGS: " + analysis.setting + ".",
-        "  Reproduce only these surroundings. Invent nothing else.",
-        "",
-      ]
-    : [
-        "STEP 1 — MEASURE THE SOURCE before rendering anything. Lock these values:",
-        "1. STOREY COUNT: Count the visible levels/floors. The output MUST contain the",
-        "   exact same number. Never simplify a tall building into a shorter one.",
-        "2. CAMERA: Note the source camera position, height, lens angle, and tilt.",
-        "   The output uses the IDENTICAL viewpoint. Never reframe to a standard",
-        "   eye-level exterior shot.",
-        "3. CROP: The output shows the same portion of the building the source shows.",
-        "   Never zoom out to show the whole building or site.",
-        "4. MASSING: Note every cantilever, setback, twist, and offset in the stacking",
-        "   of volumes, and their vertical order.",
-        "",
-      ];
-
   return [
-    "TASK: Convert the supplied architectural image into a photograph of that exact building,",
-    "as if it has been built and professionally photographed.",
-    "You are a camera, not a designer. The building is already designed — photograph it faithfully.",
+    "You are an architectural visualisation engine. Your job is to convert the attached",
+    "architectural image into a photograph of that EXACT building — as if it has been",
+    "built and professionally photographed. You are a camera, not a designer.",
     "",
-    ...analysisBlock,
-    "GEOMETRY IS FIXED. Reproduce exactly as shown in the source:",
-    "- Building typology, storey count, massing, and footprint — identical to the source",
-    "- Roof form and pitch — no changes, no additions",
+    "STEP 1 — ANALYSE the attached image before generating. Establish precisely:",
+    "1. BUILDING TYPOLOGY: what type of building this is (high-rise residential tower,",
+    "   detached house, pool house, office building, etc.). Be exact — this is the single",
+    "   most important fact. A tower must NEVER be rendered as a house, and a house must",
+    "   NEVER be rendered as a tower.",
+    "2. STOREY COUNT: count the visible levels carefully — balcony levels, window rows.",
+    "   The output must contain exactly this many storeys. Never simplify a tall building",
+    "   into a shorter one.",
+    "3. CAMERA: position, height, lens angle, and tilt. If the source looks steeply",
+    "   upward from street level, so does the output. Note the crop: if the building",
+    "   fills the frame with the top or base cut off, the output is framed identically.",
+    "4. MASSING: every cantilever, setback, twist, and offset in the stacking of",
+    "   volumes, in vertical order.",
+    "5. VISIBLE SURROUNDINGS: only what the source actually shows — sky, neighbouring",
+    "   buildings, ground. Note if little or nothing is visible.",
+    "",
+    "STEP 2 — EDIT the attached image into a photorealistic photograph that preserves",
+    "every fact from your analysis:",
+    "- IDENTICAL building typology and storey count",
+    "- IDENTICAL camera position, angle, and framing — never reframe to a standard",
+    "  eye-level shot, never zoom out to show more than the source shows",
+    "- Same massing, footprint, roof form and pitch",
     "- Every window and door: same count, same positions, same sizes, same proportions",
     "- Every balcony, terrace, and planter: same count, same levels, same positions",
     "- Facade composition and material zones exactly where the source places them",
@@ -380,9 +295,15 @@ app.post("/api/use-credit", async (req, res) => {
 });
 
 // ── Render ───────────────────────────────────────────────────────────────────
+// Engine: Responses API — GPT-5.5 orchestrating gpt-image-2 via the
+// image_generation tool with action:"edit". This replicates the ChatGPT
+// Images 2.0 stack: the mainline model analyses the source image in context,
+// revises the generation instructions itself, and gpt-image-2 executes the
+// edit. gpt-image-2 always processes image inputs at high fidelity, so
+// input_fidelity is no longer sent (the API rejects it for this model).
 app.post("/render", async (req, res) => {
-  req.setTimeout(120000);
-  res.setTimeout(120000);
+  req.setTimeout(180000);
+  res.setTimeout(180000);
   try {
     const {
       prompt,
@@ -417,30 +338,50 @@ app.post("/render", async (req, res) => {
       }
     }
 
-    // Vision pre-pass: measure typology, storeys, camera, massing from the
-    // source so gpt-image-1 is told what it is looking at instead of guessing.
-    const analysis = await analyseSource(imageBase64, mode);
+    const finalPrompt = buildPrompt(prompt, mode);
+    const base64Data = imageBase64.startsWith("data:")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
 
-    const finalPrompt = buildPrompt(prompt, mode, analysis);
-    const imageBuffer = Buffer.from(imageBase64, "base64");
-    const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
-
-    // input_fidelity "high" tells gpt-image-1 to preserve the source image's
-    // details and layout as closely as possible — the strongest control we
-    // have against invented features. size "auto" matches the source aspect
-    // ratio instead of forcing everything square (square recomposition was
-    // another source of invented content).
-    const response = await openai.images.edit({
-      model: "gpt-image-1",
-      image: imageFile,
-      prompt: finalPrompt,
-      size: "auto",
-      input_fidelity: "high",
+    const response = await openai.responses.create({
+      model: "gpt-5.5",
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: finalPrompt },
+            {
+              type: "input_image",
+              image_url: "data:image/png;base64," + base64Data,
+            },
+          ],
+        },
+      ],
+      tools: [
+        {
+          type: "image_generation",
+          action: "edit",
+          quality: "high",
+          size: "auto",
+        },
+      ],
     });
 
-    const imageBase64Out = response?.data?.[0]?.b64_json;
+    const imageCall = (response.output || []).find(
+      (o) => o.type === "image_generation_call"
+    );
+
+    if (imageCall?.revised_prompt) {
+      console.log("Revised prompt:", imageCall.revised_prompt);
+    }
+
+    const imageBase64Out = imageCall?.result;
     if (!imageBase64Out) {
-      return res.status(500).json({ ok: false, error: "No image returned." });
+      // Surface the model's text response (moderation reason, refusal, etc.)
+      // instead of a generic failure so the client can show something useful.
+      const detail = response.output_text || "No image returned.";
+      console.error("Render produced no image:", detail);
+      return res.status(500).json({ ok: false, error: detail });
     }
 
     return res.json({ ok: true, image: "data:image/png;base64," + imageBase64Out });
