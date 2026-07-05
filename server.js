@@ -54,58 +54,80 @@ async function getCreditBalance(email) {
 }
 
 // ── Prompt builder ───────────────────────────────────────────────────────────
+// Fidelity-first: the model's job is to photograph the supplied design,
+// not to redesign it. Anything not visible in the source and not requested
+// in the brief must not appear.
 function buildPrompt(userPrompt, mode) {
   if (mode === "interior") {
     return [
-      "IMPORTANT: This is an INTERIOR SPACE. You are looking INSIDE a building.",
-      "There is NO exterior view. Treat this as a high-end interior design photograph shot inside the room.",
+      "TASK: Convert the supplied interior image into a photograph of that exact room.",
+      "You are a camera, not a designer. The room already exists — photograph it faithfully.",
+      "This is an INTERIOR SPACE viewed from inside. Show no exterior, facade, or sky.",
       "",
-      "Preserve EXACTLY: room shape, ceiling height and form, floor area, wall positions,",
-      "window and door positions as seen from inside, furniture layout and scale.",
+      "GEOMETRY IS FIXED. Reproduce exactly as shown in the source:",
+      "- Room shape, wall positions, floor area",
+      "- Ceiling height and form",
+      "- Every window and door: same count, same positions, same sizes",
+      "- Furniture: same pieces, same positions, same scale — nothing added, nothing removed",
       "",
-      "Enhance with restraint: interior lighting quality (pendant lights, recessed lighting,",
-      "natural light through windows casting correct shadows), material finishes on floors,",
-      "walls and ceiling (named and honest — polished concrete, oiled timber, honed stone),",
-      "furniture quality and soft furnishings, plants and curated accessories.",
+      "ONLY these may be improved:",
+      "- Rendering quality of surfaces already present (the timber floor becomes convincing",
+      "  timber; the plasterboard wall becomes convincing plasterboard)",
+      "- Lighting realism: natural light through the existing windows, existing light",
+      "  fittings switched on, physically correct shadows",
+      "- Photographic quality: correct perspective, sharp focus, honest exposure",
       "",
-      "Lighting: warm, layered interior light. Correct shadows from each light source.",
-      "Natural light from windows should feel directional and physically correct.",
+      "STRICTLY FORBIDDEN unless visible in the source image or named in the user brief:",
+      "- New furniture, rugs, artwork, mirrors, or plants",
+      "- Pendant lights, chandeliers, LED strip lighting, downlight arrays",
+      "- Fireplaces, ceiling features, exposed beams, skylights",
+      "- Material changes (do not swap carpet for timber, paint for stone, etc.)",
+      "- People, animals, text, labels, watermarks",
       "",
-      "Quality standard: ultra photorealistic, Houses magazine interior photography.",
-      "Physically accurate reflections on floors. Correct perspective — no fisheye.",
-      "Sharp focus on the space. No blown highlights. Rich shadow detail.",
+      "IF ANYTHING IS AMBIGUOUS in the source, choose the PLAIN, CONVENTIONAL reading —",
+      "an ordinary Australian home interior. Never resolve ambiguity with a striking or",
+      "designer feature.",
       "",
-      "Do NOT show any building exterior, facade, landscape or sky.",
-      "Do NOT redesign the room, add walls, change the ceiling, or move the windows.",
-      "Do NOT add furniture not present in the source image.",
-      "",
-      "User brief: " + (userPrompt || "Create a photorealistic interior architectural render."),
+      "The user brief may only adjust atmosphere, time of day, and material finish quality.",
+      "It never changes the room's geometry or contents.",
+      "User brief: " + (userPrompt || "Photorealistic interior photograph of this exact room."),
     ].join("\n");
   }
 
   // default: exterior render
   return [
-    "Ultra photorealistic architectural visualisation. Magazine quality. Houses magazine standard.",
+    "TASK: Convert the supplied architectural image into a photograph of that exact building,",
+    "as if it has been built and professionally photographed.",
+    "You are a camera, not a designer. The building is already designed — photograph it faithfully.",
     "",
-    "Preserve the building design EXACTLY as supplied:",
-    "- All massing, rooflines, and floor counts unchanged",
-    "- All window and door positions, sizes, and proportions unchanged",
-    "- All structural rhythm and material zones unchanged",
-    "- Footprint and site relationship unchanged",
+    "GEOMETRY IS FIXED. Reproduce exactly as shown in the source:",
+    "- Massing, footprint, and number of storeys",
+    "- Roof form and pitch — no changes, no additions",
+    "- Every window and door: same count, same positions, same sizes, same proportions",
+    "- Facade composition and material zones exactly where the source places them",
     "",
-    "Enhance with restraint:",
-    "- Realistic named materials (board-marked concrete, oiled timber, colorbond steel)",
-    "- Warm Australian golden-hour lighting, physically accurate shadows",
-    "- Native Australian planting at correct scale, never obscuring the building",
-    "- Truthful site context — suburban or rural Australian setting as appropriate",
+    "ONLY these may be improved:",
+    "- Rendering quality of materials already present (the brick becomes convincing brick;",
+    "  the cladding becomes convincing cladding — same material, photographed better)",
+    "- Lighting realism: natural daylight, physically correct shadows, honest sky",
+    "- Ground plane: tidy, realistic landscaping at modest scale that never hides the building",
+    "- Photographic quality: correct perspective, sharp focus, high dynamic range",
     "",
-    "Quality: physically accurate shadows and ambient occlusion, correct perspective,",
-    "high dynamic range (no blown sky, no crushed shadows), crisp material textures.",
+    "STRICTLY FORBIDDEN unless visible in the source image or named in the user brief:",
+    "- Solar panels, green roofs, roof gardens, roof decks",
+    "- LED strips, feature lighting, uplighting, illuminated signage",
+    "- Louvres, screens, shutters, pergolas, awnings",
+    "- Pools, water features, fire pits, sculptures, flagpoles",
+    "- Extra windows, doors, skylights, dormers, chimneys, balconies, or storeys",
+    "- Cars, people, animals, text, labels, watermarks",
     "",
-    "Do NOT redesign, restyle, add windows, change the roofline, or invent elements.",
-    "Do NOT add text, labels, extra storeys, fantasy forms, or random buildings.",
+    "IF ANYTHING IS AMBIGUOUS in the source, choose the PLAIN, CONVENTIONAL reading —",
+    "an ordinary Australian suburban building. Never resolve ambiguity with a striking or",
+    "designer feature. A plain wall stays plain.",
     "",
-    "User brief: " + (userPrompt || "Create a realistic architectural render."),
+    "The user brief may only adjust setting, time of day, season, and material finish quality.",
+    "It never changes the building's geometry.",
+    "User brief: " + (userPrompt || "Photorealistic photograph of this exact building."),
   ].join("\n");
 }
 
@@ -270,11 +292,17 @@ app.post("/render", async (req, res) => {
     const imageBuffer = Buffer.from(imageBase64, "base64");
     const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
 
+    // input_fidelity "high" tells gpt-image-1 to preserve the source image's
+    // details and layout as closely as possible — the strongest control we
+    // have against invented features. size "auto" matches the source aspect
+    // ratio instead of forcing everything square (square recomposition was
+    // another source of invented content).
     const response = await openai.images.edit({
       model: "gpt-image-1",
       image: imageFile,
       prompt: finalPrompt,
-      size: "1024x1024",
+      size: "auto",
+      input_fidelity: "high",
     });
 
     const imageBase64Out = response?.data?.[0]?.b64_json;
@@ -299,7 +327,6 @@ app.post("/api/video", async (req, res) => {
 
     // ── Access check ─────────────────────────────────────────────────────────
     // Video is never free: iOS subscribers or web users with credits only.
-    // Previously this endpoint had no server-side gate at all.
     if (!subscriptionActive) {
       const balance = await getCreditBalance(email);
       if (balance <= 0) {
