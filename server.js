@@ -54,7 +54,7 @@ async function getCreditBalance(email) {
 }
 
 // ── Source analysis (vision pre-pass) ────────────────────────────────────────
-// gpt-image-1 classifies the source image itself and its guess wins over any
+// gpt-image-2 classifies the source image itself and its guess wins over any
 // static prompt instruction — a 12-storey sketch tower was rendered as a
 // 4-storey house. Fix: a cheap gpt-4o-mini vision call measures the source
 // FIRST (typology, storeys, camera, massing) and the result is injected into
