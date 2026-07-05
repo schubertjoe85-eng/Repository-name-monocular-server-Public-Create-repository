@@ -4,7 +4,6 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
-import Jimp from "jimp";
 
 dotenv.config();
 
@@ -18,9 +17,11 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-// Free render tracking (server-side, by IP).
-// In-memory: resets on Render restart.
-const freeRendersByIp = {};
+// ── Free render tracking (server-side) ───────────────────────────────────────
+// Keyed by identity: the email/user ID when supplied, otherwise the client IP.
+// In-memory: resets on Render restart. Good enough as a soft guard;
+// move to Supabase later if abuse becomes a problem.
+const freeRenders = {};
 const FREE_RENDER_LIMIT = 1;
 
 function getClientIp(req) {
@@ -31,224 +32,180 @@ function getClientIp(req) {
   );
 }
 
-// Free render guard, shared by /render and /render-nb.
-// Skipped when the caller identifies as a web credits user (email)
-// or an iOS subscriber (subscriptionActive === true from the app).
-// Returns true if the request may proceed, false if it was blocked.
-function passesFreeRenderGuard(req, res, email, subscriptionActive) {
-  if (email || subscriptionActive === true) return true;
-  const ip = getClientIp(req);
-  const used = freeRendersByIp[ip] || 0;
-  if (used >= FREE_RENDER_LIMIT) {
-    res.status(402).json({
-      ok: false,
-      error: "Free render used. Enter your email and buy credits to continue.",
-    });
-    return false;
-  }
-  freeRendersByIp[ip] = used + 1;
-  return true;
+// A stable identity for the free-render guard. iOS sends the RevenueCat app
+// user ID in the email field; web sends a real email (or nothing for guests).
+function getIdentity(req, email) {
+  return email ? "id:" + email : "ip:" + getClientIp(req);
 }
 
-// Runway rejects images with width/height outside 0.5–2.0.
-// Center-crop just enough to bring the image inside that range.
-// Returns a PNG buffer, untouched if already valid.
-async function clampAspectRatio(imageBuffer) {
-  const img = await Jimp.read(imageBuffer);
-  const w = img.bitmap.width;
-  const h = img.bitmap.height;
-  const ratio = w / h;
-
-  if (ratio >= 0.5 && ratio <= 2.0) {
-    return imageBuffer;
+// Look up the credit balance for an email. Returns 0 on any failure.
+async function getCreditBalance(email) {
+  if (!email) return 0;
+  try {
+    const { data } = await supabase
+      .from("credits")
+      .select("balance")
+      .eq("email", email)
+      .maybeSingle();
+    return data?.balance || 0;
+  } catch (e) {
+    return 0;
   }
-
-  if (ratio < 0.5) {
-    // Too tall — trim top and bottom.
-    const newH = Math.floor(w / 0.5);
-    const y = Math.floor((h - newH) / 2);
-    img.crop(0, y, w, newH);
-  } else {
-    // Too wide — trim left and right.
-    const newW = Math.floor(h * 2.0);
-    const x = Math.floor((w - newW) / 2);
-    img.crop(x, 0, newW, h);
-  }
-
-  console.log("Cropped image for Runway: " + w + "x" + h + " -> " + img.bitmap.width + "x" + img.bitmap.height);
-  return await img.getBufferAsync(Jimp.MIME_PNG);
 }
 
-// ── Render engines ──────────────────────────────────────────────────────────
-// /render is a two-pass pipeline:
-//   Pass 1 — gpt-image-1: faithful geometry render (the building).
-//   Pass 2 — Nano Banana Pro: backdrop-only edit at 2K (sky, landscape, context).
-//            Geometry is locked. If this pass fails, the Pass 1 render is used.
-// /render-nb remains the pure single-pass Nano Banana route.
-
-async function renderWithNanoBanana(finalPrompt, imageBase64) {
-  const base64Data = imageBase64.startsWith("data:")
-    ? imageBase64.split(",")[1]
-    : imageBase64;
-
-  const geminiRes = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-goog-api-key": process.env.GEMINI_API_KEY,
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: finalPrompt },
-              {
-                inline_data: {
-                  mime_type: "image/png",
-                  data: base64Data,
-                },
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          responseModalities: ["IMAGE"],
-          imageConfig: {
-            imageSize: "2K",
-          },
-        },
-      }),
-    }
-  );
-
-  const data = await geminiRes.json();
-
-  if (!geminiRes.ok) {
-    throw new Error(data?.error?.message || "Nano Banana render failed.");
-  }
-
-  const parts = data?.candidates?.[0]?.content?.parts || [];
-  const imagePart = parts.find((p) => p.inlineData || p.inline_data);
-  const imgData = imagePart?.inlineData?.data || imagePart?.inline_data?.data;
-
-  if (!imgData) {
-    throw new Error("No image returned by Nano Banana.");
-  }
-
-  return "data:image/png;base64," + imgData;
-}
-
-async function renderWithOpenAI(finalPrompt, imageBase64) {
-  const base64Data = imageBase64.startsWith("data:")
-    ? imageBase64.split(",")[1]
-    : imageBase64;
-  const imageBuffer = Buffer.from(base64Data, "base64");
-  const imageFile = await OpenAI.toFile(imageBuffer, "source.png", { type: "image/png" });
-
-  const response = await openai.images.edit({
-    model: "gpt-image-1",
-    image: imageFile,
-    prompt: finalPrompt,
-    size: "1024x1024",
-  });
-
-  const imageBase64Out = response?.data?.[0]?.b64_json;
-  if (!imageBase64Out) {
-    throw new Error("No image returned by OpenAI.");
-  }
-
-  return "data:image/png;base64," + imageBase64Out;
-}
-
-// Pass 2 — Nano Banana backdrop-only edit.
-// Takes the finished gpt-image-1 render and replaces ONLY the backdrop.
-// The building is locked. Also upscales the result to 2K.
-function buildBackdropPrompt(userPrompt) {
-  return [
-    "You are editing an EXISTING architectural render. This is an EDIT, not a new image.",
-    "",
-    "Replace ONLY the sky, landscaping, ground plane and surrounding context.",
-    "Make the backdrop photorealistic: real-estate photography quality, natural",
-    "Australian light, native planting at correct scale, believable suburban or",
-    "rural Australian setting as appropriate to the building.",
-    "",
-    "THE BUILDING IS LOCKED. Preserve it pixel-faithfully:",
-    "- Exact geometry, massing, roofline and floor count",
-    "- Exact window and door positions, sizes and proportions",
-    "- Exact materials, colours and detailing",
-    "- Exact footprint and camera perspective",
-    "",
-    "Do NOT redesign, restyle, extend or decorate the building.",
-    "Do NOT add structures, objects or vegetation attached to or in front of the building.",
-    "Do NOT add text, labels, people, vehicles or fantasy elements.",
-    "No stylised, painterly or inventive treatment — faithful photorealism only.",
-    "",
-    "Backdrop direction from the user (apply to the setting ONLY, never the building): " +
-      (userPrompt || "A natural, truthful setting appropriate to the design."),
-  ].join("\n");
-}
-
-async function nanoBackdropPass(renderedImage, userPrompt) {
-  const backdropPrompt = buildBackdropPrompt(userPrompt);
-  return await renderWithNanoBanana(backdropPrompt, renderedImage);
-}
-
+// ── Prompt builder ───────────────────────────────────────────────────────────
+// Engine: GPT-5.5 (the "director") orchestrating gpt-image-2 via the
+// image_generation tool. The director rewrites our instructions into its own
+// revised_prompt before the image model runs — and left unconstrained it
+// rewrites them as a cinematic scene description (sunset, lakes, bushland).
+// So this prompt constrains BOTH layers: what the final image must preserve,
+// AND what the director is allowed to write in its tool call. The director's
+// prompt must be a fidelity instruction, never a scene description.
 function buildPrompt(userPrompt, mode) {
   if (mode === "interior") {
     return [
-      "IMPORTANT: This is an INTERIOR SPACE. You are looking INSIDE a building.",
-      "There is NO exterior view. Treat this as a high-end interior design photograph shot inside the room.",
+      "You are an architectural visualisation engine. Your job is to convert the attached",
+      "interior image into a photograph of that EXACT room — as if the room has been built",
+      "and professionally photographed. You are a camera, not a designer.",
+      "This is an INTERIOR SPACE viewed from inside. Show no exterior, facade, or sky.",
       "",
-      "Preserve EXACTLY: room shape, ceiling height and form, floor area, wall positions,",
-      "window and door positions as seen from inside, furniture layout and scale.",
+      "STEP 1 — ANALYSE the attached image before generating. Establish precisely:",
+      "1. ROOM TYPE: what kind of room this is (living room, bedroom, indoor pool hall, etc.)",
+      "2. CAMERA: position, height, lens angle, tilt, and how much of the room is in frame",
+      "3. CONTENTS: every window, door, and piece of furniture — count, position, scale",
+      "4. MATERIALS: the visible floor, wall, and ceiling finishes",
       "",
-      "Enhance with restraint: interior lighting quality (pendant lights, recessed lighting,",
-      "natural light through windows casting correct shadows), material finishes on floors,",
-      "walls and ceiling (named and honest — polished concrete, oiled timber, honed stone),",
-      "furniture quality and soft furnishings, plants and curated accessories.",
+      "STEP 2 — EDIT the attached image into a photorealistic photograph that preserves",
+      "every fact from your analysis:",
+      "- IDENTICAL camera position, angle, and framing — never reframe or pull back",
+      "- Same room shape, wall positions, floor area, ceiling height and form",
+      "- Every window and door: same count, same positions, same sizes",
+      "- Furniture: same pieces, same positions, same scale — nothing added, nothing removed",
       "",
-      "Lighting: warm, layered interior light. Correct shadows from each light source.",
-      "Natural light from windows should feel directional and physically correct.",
+      "DIRECTOR RULES — how you must write your prompt for the image generation tool:",
+      "- Your tool prompt is a FIDELITY INSTRUCTION, never a scene description.",
+      "- It must restate as fixed facts: the room type, camera position/angle/framing,",
+      "  and the contents inventory from your analysis.",
+      "- It must instruct: photorealistic materials and lighting only; change nothing else.",
+      "- It must NOT contain atmospheric or lifestyle language: no 'cozy', 'inviting',",
+      "  'sun-drenched', 'designer', no described decor, styling, or mood not present",
+      "  in the source or named in the user brief.",
+      "- Default lighting: neutral daylight consistent with the source. Never invent",
+      "  dramatic lighting.",
       "",
-      "Quality standard: ultra photorealistic, Houses magazine interior photography.",
-      "Physically accurate reflections on floors. Correct perspective — no fisheye.",
-      "Sharp focus on the space. No blown highlights. Rich shadow detail.",
+      "ONLY these may be improved:",
+      "- Rendering quality of surfaces already present (the timber floor becomes convincing",
+      "  timber; the plasterboard wall becomes convincing plasterboard — same material)",
+      "- Lighting realism: natural light through the existing windows, existing light",
+      "  fittings switched on, physically correct shadows",
+      "- Photographic quality: sharp focus, honest exposure — at the SAME camera position",
       "",
-      "Do NOT show any building exterior, facade, landscape or sky.",
-      "Do NOT redesign the room, add walls, change the ceiling, or move the windows.",
-      "Do NOT add furniture not present in the source image.",
+      "STRICTLY FORBIDDEN unless visible in the source image or named in the user brief:",
+      "- Changing the camera position, angle, lens, or framing",
+      "- New furniture, rugs, artwork, mirrors, or plants",
+      "- Pendant lights, chandeliers, LED strip lighting, downlight arrays",
+      "- Fireplaces, ceiling features, exposed beams, skylights",
+      "- Material changes (do not swap carpet for timber, paint for stone, etc.)",
+      "- People, animals, text, labels, watermarks",
       "",
-      "User brief: " + (userPrompt || "Create a photorealistic interior architectural render."),
+      "IF ANYTHING IS AMBIGUOUS in the source, choose the PLAIN, CONVENTIONAL reading —",
+      "an ordinary Australian home interior. Never resolve ambiguity with a striking or",
+      "designer feature.",
+      "",
+      "The user brief may only adjust atmosphere, time of day, and material finish quality.",
+      "It never changes the room's geometry, contents, or the camera.",
+      "User brief: " + (userPrompt || "Photorealistic interior photograph of this exact room."),
     ].join("\n");
   }
 
+  // default: exterior render
   return [
-    "Ultra photorealistic architectural visualisation. Magazine quality. Houses magazine standard.",
+    "You are an architectural visualisation engine. Your job is to convert the attached",
+    "architectural image into a photograph of that EXACT building — as if it has been",
+    "built and professionally photographed. You are a camera, not a designer.",
     "",
-    "Preserve the building design EXACTLY as supplied:",
-    "- All massing, rooflines, and floor counts unchanged",
-    "- All window and door positions, sizes, and proportions unchanged",
-    "- All structural rhythm and material zones unchanged",
-    "- Footprint and site relationship unchanged",
+    "STEP 1 — ANALYSE the attached image before generating. Establish precisely:",
+    "1. BUILDING TYPOLOGY: what type of building this is (high-rise residential tower,",
+    "   detached house, pool house, office building, etc.). Be exact — a tower must",
+    "   NEVER be rendered as a house, and a house must NEVER be rendered as a tower.",
+    "2. STOREY COUNT: count the visible levels carefully — balcony levels, window rows.",
+    "   The output must contain exactly this many storeys.",
+    "3. CAMERA: position, height, lens angle, and tilt. If the source looks steeply",
+    "   upward from street level, so does the output. Note the crop: if the building",
+    "   fills the frame with the top or base cut off, the output is framed identically.",
+    "4. MASSING: every cantilever, setback, twist, and offset in the stacking of",
+    "   volumes, in vertical order.",
+    "5. VISIBLE SURROUNDINGS AND SKY: only what the source actually shows. Note the",
+    "   sky treatment (blank, white, sketchy wash, blue) and whether any ground,",
+    "   street, or neighbouring building is visible.",
     "",
-    "Enhance with restraint:",
-    "- Realistic named materials (board-marked concrete, oiled timber, colorbond steel)",
-    "- Warm Australian golden-hour lighting, physically accurate shadows",
-    "- Native Australian planting at correct scale, never obscuring the building",
-    "- Truthful site context — suburban or rural Australian setting as appropriate",
+    "STEP 2 — EDIT the attached image into a photorealistic photograph that preserves",
+    "every fact from your analysis:",
+    "- IDENTICAL building typology and storey count",
+    "- IDENTICAL camera position, angle, and framing — never reframe to a standard",
+    "  eye-level shot, never zoom out to show more than the source shows",
+    "- Same massing, footprint, roof form and pitch",
+    "- Every window and door: same count, same positions, same sizes, same proportions",
+    "- Every balcony, terrace, and planter: same count, same levels, same positions",
+    "- Facade composition and material zones exactly where the source places them",
     "",
-    "Quality: physically accurate shadows and ambient occlusion, correct perspective,",
-    "high dynamic range (no blown sky, no crushed shadows), crisp material textures.",
+    "DIRECTOR RULES — how you must write your prompt for the image generation tool:",
+    "- Your tool prompt is a FIDELITY INSTRUCTION, never a scene description.",
+    "- It must restate as fixed facts: the typology, the exact storey count, the",
+    "  camera angle and crop, and the massing from your analysis.",
+    "- It must instruct: photorealistic materials, physically correct daylight,",
+    "  same framing; change nothing else.",
+    "- It must NOT contain scenic, atmospheric, or lifestyle language. Banned from",
+    "  your tool prompt unless present in the source or named in the user brief:",
+    "  'golden hour', 'sunset', 'sunrise', 'dusk', 'nestled', 'surrounded by',",
+    "  'set in', 'overlooking', and ANY description of landscape, vegetation,",
+    "  water, terrain, or setting.",
+    "- LIGHTING DEFAULT: neutral clear daytime consistent with the source sky.",
+    "  NEVER default to sunset or golden hour.",
+    "- SKY AND BACKGROUND DEFAULT: match the source. If the source sky is blank,",
+    "  white, or a loose wash, render a plain clear daytime sky and nothing else.",
     "",
-    "Do NOT redesign, restyle, add windows, change the roofline, or invent elements.",
-    "Do NOT add text, labels, extra storeys, fantasy forms, or random buildings.",
+    "ONLY these may be improved:",
+    "- Rendering quality of materials already present (the brick becomes convincing brick;",
+    "  the cladding becomes convincing cladding — same material, photographed better)",
+    "- Lighting realism: neutral natural daylight, physically correct shadows",
+    "- Photographic quality: sharp focus, high dynamic range — at the SAME camera angle",
     "",
-    "User brief: " + (userPrompt || "Create a realistic architectural render."),
+    "SITE CONTEXT: Reproduce only the surroundings the source image actually shows,",
+    "in the same positions. If the source shows little or no site, keep the surroundings",
+    "minimal and neutral — plain ground plane or sky consistent with the source framing.",
+    "Never invent a setting. If the user brief names a setting (e.g. inner-city, CBD,",
+    "coastal), follow the brief; otherwise invent nothing.",
+    "",
+    "STRICTLY FORBIDDEN unless visible in the source image or named in the user brief:",
+    "- Changing the building typology (tower to house, house to tower, etc.)",
+    "- Reducing or increasing the number of storeys",
+    "- Changing the camera position, angle, lens, or framing",
+    "- Zooming out, recentring, or recomposing the shot",
+    "- Sunset, sunrise, golden-hour, or dusk lighting",
+    "- Lakes, rivers, ponds, billabongs, or any water body",
+    "- Trees, bushland, gardens, or landscaping of any kind",
+    "- Invented site context: driveways, fences, streetscapes, hills, or",
+    "  neighbouring buildings not present in the source",
+    "- Solar panels, green roofs, roof gardens, roof decks",
+    "- LED strips, feature lighting, uplighting, illuminated signage",
+    "- Louvres, screens, shutters, pergolas, awnings",
+    "- Pools, water features, fire pits, sculptures, flagpoles",
+    "- Extra windows, doors, skylights, dormers, chimneys, balconies, or storeys",
+    "- Cars, people, animals, text, labels, watermarks",
+    "",
+    "IF ANYTHING IS AMBIGUOUS in the source, choose the PLAIN, CONVENTIONAL reading.",
+    "Never resolve ambiguity with a striking or designer feature. A plain wall stays",
+    "plain. An empty foreground stays empty. A blank sky stays a plain daytime sky.",
+    "",
+    "The user brief may adjust time of day, season, weather, and material finish",
+    "quality, and may name a setting. It never changes the building's typology,",
+    "geometry, storey count, or the camera.",
+    "User brief: " + (userPrompt || "Photorealistic photograph of this exact building."),
   ].join("\n");
 }
 
+// ── Basic routes ─────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({ ok: true, name: "Monocular Server", status: "running" });
 });
@@ -265,6 +222,7 @@ app.get("/terms.html", (req, res) => {
   res.redirect(301, "https://monocular-opal.vercel.app/terms.html");
 });
 
+// ── Stripe / credits ─────────────────────────────────────────────────────────
 app.post("/api/checkout-success", async (req, res) => {
   try {
     const { sessionId } = req.body;
@@ -366,92 +324,129 @@ app.post("/api/use-credit", async (req, res) => {
   }
 });
 
-// ── Render v1 — two-pass pipeline ───────────────────────────────────────────
-// Pass 1: gpt-image-1 (faithful geometry). Pass 2: Nano Banana backdrop @ 2K.
-// Interior mode: single pass (gpt-image-1 only — no backdrop to replace).
-// If the backdrop pass fails, the Pass 1 render is returned untouched.
+// ── Render ───────────────────────────────────────────────────────────────────
+// Engine: Responses API — GPT-5.5 orchestrating gpt-image-2 via the
+// image_generation tool with action:"edit". The director's revised_prompt and
+// the incoming user brief are both logged so drift can be traced to its
+// source: frontend style strings vs director embellishment.
 app.post("/render", async (req, res) => {
   req.setTimeout(180000);
   res.setTimeout(180000);
   try {
-    const { prompt, imageBase64, mode = "render", email, subscriptionActive } = req.body || {};
+    const {
+      prompt,
+      imageBase64,
+      mode = "render",
+      email,
+      subscriptionActive = false,
+    } = req.body || {};
 
     if (!imageBase64) {
       return res.status(400).json({ ok: false, error: "Upload an image first." });
     }
 
-    // Server-side free render guard.
-    // Skipped for web credits users (email) and iOS subscribers (subscriptionActive).
-    if (!passesFreeRenderGuard(req, res, email, subscriptionActive)) return;
+    // Trace exactly what the frontend sends — if renders keep drifting to a
+    // house style the app didn't ask for, this line reveals whether the app
+    // is appending style presets to the brief.
+    console.log("User brief received:", JSON.stringify(prompt), "mode:", mode);
+
+    // ── Access check ─────────────────────────────────────────────────────────
+    // 1. iOS subscribers (RevenueCat entitlement) render freely.
+    // 2. Web users with a credit balance render freely here — the web
+    //    frontend deducts via /api/use-credit as before.
+    // 3. Everyone else gets FREE_RENDER_LIMIT free renders, tracked by
+    //    email/user ID when supplied, otherwise by IP.
+    if (!subscriptionActive) {
+      const balance = await getCreditBalance(email);
+      if (balance <= 0) {
+        const identity = getIdentity(req, email);
+        const used = freeRenders[identity] || 0;
+        if (used >= FREE_RENDER_LIMIT) {
+          return res.status(402).json({
+            ok: false,
+            error: "Free render used. Subscribe or buy credits to continue.",
+          });
+        }
+        freeRenders[identity] = used + 1;
+      }
+    }
 
     const finalPrompt = buildPrompt(prompt, mode);
+    const base64Data = imageBase64.startsWith("data:")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
 
-    // Pass 1 — geometry render with gpt-image-1.
-    const baseRender = await renderWithOpenAI(finalPrompt, imageBase64);
+    const response = await openai.responses.create({
+      model: "gpt-5.5",
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: finalPrompt },
+            {
+              type: "input_image",
+              image_url: "data:image/png;base64," + base64Data,
+            },
+          ],
+        },
+      ],
+      tools: [
+        {
+          type: "image_generation",
+          action: "edit",
+          quality: "high",
+          size: "auto",
+        },
+      ],
+    });
 
-    // Interior renders have no backdrop — return the Pass 1 render.
-    if (mode === "interior") {
-      return res.json({ ok: true, image: baseRender });
+    const imageCall = (response.output || []).find(
+      (o) => o.type === "image_generation_call"
+    );
+
+    if (imageCall?.revised_prompt) {
+      console.log("Revised prompt:", imageCall.revised_prompt);
     }
 
-    // Pass 2 — Nano Banana backdrop-only edit at 2K.
-    // Failsafe: any error here returns the Pass 1 render instead.
-    let image = baseRender;
-    try {
-      image = await nanoBackdropPass(baseRender, prompt);
-    } catch (backdropError) {
-      console.error("Backdrop pass failed, returning base render:", backdropError.message);
+    const imageBase64Out = imageCall?.result;
+    if (!imageBase64Out) {
+      // Surface the model's text response (moderation reason, refusal, etc.)
+      // instead of a generic failure so the client can show something useful.
+      const detail = response.output_text || "No image returned.";
+      console.error("Render produced no image:", detail);
+      return res.status(500).json({ ok: false, error: detail });
     }
 
-    return res.json({ ok: true, image });
+    return res.json({ ok: true, image: "data:image/png;base64," + imageBase64Out });
   } catch (error) {
     console.error("Render error:", error);
     return res.status(500).json({ ok: false, error: error.message || "Render failed." });
   }
 });
 
-// ── Render v2 — pure Nano Banana Pro (single pass) ──────────────────────────
-app.post("/render-nb", async (req, res) => {
-  req.setTimeout(120000);
-  res.setTimeout(120000);
-  try {
-    const { prompt, imageBase64, mode = "render", email, subscriptionActive } = req.body || {};
-
-    if (!imageBase64) {
-      return res.status(400).json({ ok: false, error: "Upload an image first." });
-    }
-
-    // Same free render guard as /render — shares the same IP counter.
-    // Skipped for web credits users (email) and iOS subscribers (subscriptionActive).
-    if (!passesFreeRenderGuard(req, res, email, subscriptionActive)) return;
-
-    const finalPrompt = buildPrompt(prompt, mode);
-    const image = await renderWithNanoBanana(finalPrompt, imageBase64);
-
-    return res.json({ ok: true, image });
-  } catch (error) {
-    console.error("Nano Banana render error:", error);
-    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
-  }
-});
-
+// ── Video (Runway) ───────────────────────────────────────────────────────────
 app.post("/api/video", async (req, res) => {
   try {
-    const { prompt, imageBase64, images, mode = "render" } = req.body;
+    const { prompt, imageBase64, images, mode = "render", email, subscriptionActive = false } = req.body;
     const imageList = Array.isArray(images) && images.length ? images : imageBase64 ? [imageBase64] : [];
     if (!prompt) return res.status(400).json({ ok: false, error: "Missing prompt." });
     if (!imageList.length) return res.status(400).json({ ok: false, error: "Please upload an image." });
 
+    // ── Access check ─────────────────────────────────────────────────────────
+    // Video is never free: iOS subscribers or web users with credits only.
+    if (!subscriptionActive) {
+      const balance = await getCreditBalance(email);
+      if (balance <= 0) {
+        return res.status(402).json({
+          ok: false,
+          error: "Video generation requires a subscription or credits.",
+        });
+      }
+    }
+
     const src = imageList[0];
     const base64Data = src.startsWith("data:") ? src.split(",")[1] : src;
-    let imageBuffer = Buffer.from(base64Data, "base64");
-
-    // Runway requires width/height between 0.5 and 2.0 — crop if needed.
-    try {
-      imageBuffer = await clampAspectRatio(imageBuffer);
-    } catch (cropError) {
-      console.error("Aspect ratio clamp failed, using original image:", cropError.message);
-    }
+    const imageBuffer = Buffer.from(base64Data, "base64");
 
     const uploadInit = await fetch("https://api.dev.runwayml.com/v1/uploads", {
       method: "POST",
@@ -576,6 +571,7 @@ app.get("/api/video/:id/content", async (req, res) => {
   }
 });
 
+// ── Keep-alive ping (Render free tier) ───────────────────────────────────────
 const SELF_URL = "https://monocular-server.onrender.com/health";
 setInterval(function () {
   fetch(SELF_URL).then(function () {}).catch(function () {});
