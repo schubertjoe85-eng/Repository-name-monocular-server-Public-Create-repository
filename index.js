@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
+import crypto from "crypto";
 
 dotenv.config();
 
@@ -51,6 +52,75 @@ async function getCreditBalance(email) {
   } catch (e) {
     return 0;
   }
+}
+
+// ── Render job store (async job pattern) ─────────────────────────────────────
+// Render's proxy kills HTTP requests at ~100 seconds, and high-fidelity
+// renders regularly exceed that — the app sees "connection failed" while the
+// server-side render is still running. The fix: POST /render/start returns a
+// jobId immediately and runs the OpenAI call in the background; the app polls
+// GET /render/status/:jobId until the image is ready. No single request ever
+// runs long enough to hit the proxy timeout.
+//
+// In-memory: jobs are lost on Render restart. The client treats a missing
+// jobId as a failed render and lets the user retry — same recovery story as
+// the free-render map above.
+const renderJobs = {};
+const JOB_TTL_MS = 30 * 60 * 1000; // purge finished/stale jobs after 30 min
+
+setInterval(function () {
+  const now = Date.now();
+  for (const id of Object.keys(renderJobs)) {
+    if (now - renderJobs[id].createdAt > JOB_TTL_MS) {
+      delete renderJobs[id];
+    }
+  }
+}, 5 * 60 * 1000);
+
+// The actual OpenAI render call, shared by the legacy synchronous endpoint
+// and the background job runner.
+async function runRender(finalPrompt, base64Data) {
+  const response = await openai.responses.create({
+    model: "gpt-5.5",
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: finalPrompt },
+          {
+            type: "input_image",
+            image_url: "data:image/png;base64," + base64Data,
+          },
+        ],
+      },
+    ],
+    tools: [
+      {
+        type: "image_generation",
+        action: "edit",
+        quality: "high",
+        size: "auto",
+      },
+    ],
+  });
+
+  const imageCall = (response.output || []).find(
+    (o) => o.type === "image_generation_call"
+  );
+
+  if (imageCall?.revised_prompt) {
+    console.log("Revised prompt:", imageCall.revised_prompt);
+  }
+
+  const imageBase64Out = imageCall?.result;
+  if (!imageBase64Out) {
+    // Surface the model's text response (moderation reason, refusal, etc.)
+    // instead of a generic failure so the client can show something useful.
+    const detail = response.output_text || "No image returned.";
+    throw new Error(detail);
+  }
+
+  return "data:image/png;base64," + imageBase64Out;
 }
 
 // ── Prompt builder ───────────────────────────────────────────────────────────
@@ -324,11 +394,124 @@ app.post("/api/use-credit", async (req, res) => {
   }
 });
 
-// ── Render ───────────────────────────────────────────────────────────────────
-// Engine: Responses API — GPT-5.5 orchestrating gpt-image-2 via the
-// image_generation tool with action:"edit". The director's revised_prompt and
-// the incoming user brief are both logged so drift can be traced to its
-// source: frontend style strings vs director embellishment.
+// ── Render access check (shared) ─────────────────────────────────────────────
+// 1. iOS subscribers (RevenueCat entitlement) render freely.
+// 2. Web users with a credit balance render freely here — the web
+//    frontend deducts via /api/use-credit as before.
+// 3. Everyone else gets FREE_RENDER_LIMIT free renders, tracked by
+//    email/user ID when supplied, otherwise by IP.
+// Returns { allowed, usedFreeRender, identity } so the job runner can refund
+// the free render if the render itself fails.
+async function checkRenderAccess(req, email, subscriptionActive) {
+  if (subscriptionActive) return { allowed: true, usedFreeRender: false, identity: null };
+
+  const balance = await getCreditBalance(email);
+  if (balance > 0) return { allowed: true, usedFreeRender: false, identity: null };
+
+  const identity = getIdentity(req, email);
+  const used = freeRenders[identity] || 0;
+  if (used >= FREE_RENDER_LIMIT) {
+    return { allowed: false, usedFreeRender: false, identity };
+  }
+  freeRenders[identity] = used + 1;
+  return { allowed: true, usedFreeRender: true, identity };
+}
+
+// ── Render (async job pattern — use these endpoints) ─────────────────────────
+// POST /render/start validates, checks access, kicks off the OpenAI call in
+// the background, and returns a jobId within milliseconds. The client then
+// polls GET /render/status/:jobId every few seconds. This avoids Render's
+// ~100 second proxy timeout, which the legacy synchronous /render hits
+// whenever a high-fidelity render runs long.
+app.post("/render/start", async (req, res) => {
+  try {
+    const {
+      prompt,
+      imageBase64,
+      mode = "render",
+      email,
+      subscriptionActive = false,
+    } = req.body || {};
+
+    if (!imageBase64) {
+      return res.status(400).json({ ok: false, error: "Upload an image first." });
+    }
+
+    console.log("User brief received:", JSON.stringify(prompt), "mode:", mode);
+
+    const access = await checkRenderAccess(req, email, subscriptionActive);
+    if (!access.allowed) {
+      return res.status(402).json({
+        ok: false,
+        error: "Free render used. Subscribe or buy credits to continue.",
+      });
+    }
+
+    const finalPrompt = buildPrompt(prompt, mode);
+    const base64Data = imageBase64.startsWith("data:")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
+
+    const jobId = crypto.randomUUID();
+    renderJobs[jobId] = { status: "pending", createdAt: Date.now() };
+
+    // Fire and forget — the job runs after this response is sent.
+    runRender(finalPrompt, base64Data)
+      .then((image) => {
+        renderJobs[jobId] = { status: "done", image, createdAt: Date.now() };
+      })
+      .catch((error) => {
+        console.error("Render job " + jobId + " failed:", error);
+        // Refund the free render so a failed render doesn't burn the
+        // user's only free attempt.
+        if (access.usedFreeRender && access.identity) {
+          freeRenders[access.identity] = Math.max(
+            0,
+            (freeRenders[access.identity] || 1) - 1
+          );
+        }
+        renderJobs[jobId] = {
+          status: "failed",
+          error: error.message || "Render failed.",
+          createdAt: Date.now(),
+        };
+      });
+
+    return res.json({ ok: true, jobId });
+  } catch (error) {
+    console.error("Render start error:", error);
+    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
+  }
+});
+
+app.get("/render/status/:jobId", (req, res) => {
+  const job = renderJobs[req.params.jobId];
+  if (!job) {
+    // Unknown or expired job (server may have restarted mid-render).
+    return res.status(404).json({
+      ok: false,
+      status: "not_found",
+      error: "Render job not found. Please try again.",
+    });
+  }
+  if (job.status === "pending") {
+    return res.json({ ok: true, status: "pending" });
+  }
+  if (job.status === "failed") {
+    return res.json({ ok: false, status: "failed", error: job.error });
+  }
+  // done — return the image and free the memory immediately rather than
+  // waiting for the TTL sweep (images are multi-megabyte strings).
+  const image = job.image;
+  delete renderJobs[req.params.jobId];
+  return res.json({ ok: true, status: "done", image });
+});
+
+// ── Render (legacy synchronous endpoint) ─────────────────────────────────────
+// Kept for the shipped App Store build (1.0.x), which calls POST /render and
+// waits for the image in one request. Subject to Render's ~100s proxy
+// timeout on long renders — do not use in new client code. Retire once the
+// job-pattern app build is fully adopted.
 app.post("/render", async (req, res) => {
   req.setTimeout(180000);
   res.setTimeout(180000);
@@ -345,30 +528,14 @@ app.post("/render", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Upload an image first." });
     }
 
-    // Trace exactly what the frontend sends — if renders keep drifting to a
-    // house style the app didn't ask for, this line reveals whether the app
-    // is appending style presets to the brief.
     console.log("User brief received:", JSON.stringify(prompt), "mode:", mode);
 
-    // ── Access check ─────────────────────────────────────────────────────────
-    // 1. iOS subscribers (RevenueCat entitlement) render freely.
-    // 2. Web users with a credit balance render freely here — the web
-    //    frontend deducts via /api/use-credit as before.
-    // 3. Everyone else gets FREE_RENDER_LIMIT free renders, tracked by
-    //    email/user ID when supplied, otherwise by IP.
-    if (!subscriptionActive) {
-      const balance = await getCreditBalance(email);
-      if (balance <= 0) {
-        const identity = getIdentity(req, email);
-        const used = freeRenders[identity] || 0;
-        if (used >= FREE_RENDER_LIMIT) {
-          return res.status(402).json({
-            ok: false,
-            error: "Free render used. Subscribe or buy credits to continue.",
-          });
-        }
-        freeRenders[identity] = used + 1;
-      }
+    const access = await checkRenderAccess(req, email, subscriptionActive);
+    if (!access.allowed) {
+      return res.status(402).json({
+        ok: false,
+        error: "Free render used. Subscribe or buy credits to continue.",
+      });
     }
 
     const finalPrompt = buildPrompt(prompt, mode);
@@ -376,48 +543,8 @@ app.post("/render", async (req, res) => {
       ? imageBase64.split(",")[1]
       : imageBase64;
 
-    const response = await openai.responses.create({
-      model: "gpt-5.5",
-      input: [
-        {
-          role: "user",
-          content: [
-            { type: "input_text", text: finalPrompt },
-            {
-              type: "input_image",
-              image_url: "data:image/png;base64," + base64Data,
-            },
-          ],
-        },
-      ],
-      tools: [
-        {
-          type: "image_generation",
-          action: "edit",
-          quality: "high",
-          size: "auto",
-        },
-      ],
-    });
-
-    const imageCall = (response.output || []).find(
-      (o) => o.type === "image_generation_call"
-    );
-
-    if (imageCall?.revised_prompt) {
-      console.log("Revised prompt:", imageCall.revised_prompt);
-    }
-
-    const imageBase64Out = imageCall?.result;
-    if (!imageBase64Out) {
-      // Surface the model's text response (moderation reason, refusal, etc.)
-      // instead of a generic failure so the client can show something useful.
-      const detail = response.output_text || "No image returned.";
-      console.error("Render produced no image:", detail);
-      return res.status(500).json({ ok: false, error: detail });
-    }
-
-    return res.json({ ok: true, image: "data:image/png;base64," + imageBase64Out });
+    const image = await runRender(finalPrompt, base64Data);
+    return res.json({ ok: true, image });
   } catch (error) {
     console.error("Render error:", error);
     return res.status(500).json({ ok: false, error: error.message || "Render failed." });
