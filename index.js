@@ -373,6 +373,77 @@ function buildPrompt(userPrompt, mode) {
   ].join("\n");
 }
 
+// ── Video prompt builder ─────────────────────────────────────────────────────
+// Runway Gen-4.5 promptText is capped at 1000 characters and weights early
+// tokens most heavily, so unlike the still-image prompt this must be short
+// and lead with the fidelity constraints — the user brief goes LAST.
+//
+// The precision problem: the old inline motion strings ("orbit around the
+// building, wide to close") actively invited Runway to invent the unseen
+// sides of the building plus a whole site around it. This got dramatically
+// worse with model captures, where the source is a single clay viewpoint on
+// a blank backdrop — a full orbit forces pure hallucination.
+//
+// Fixes:
+//   - model_capture: NO orbit. Slow push-in with slight parallax only, so the
+//     camera never has to reveal geometry the capture doesn't show. Background
+//     locked to plain sky / neutral ground; the standard no-invention list.
+//   - default exterior: restrained arc that stays near the source viewpoint
+//     instead of a wide-to-close orbit; same no-invention list.
+//   - interior: unchanged walkthrough intent, but with explicit "room stays
+//     unchanged" and no-addition constraints up front.
+const RUNWAY_PROMPT_MAX = 1000;
+
+function clampVideoPrompt(text) {
+  return text.length > RUNWAY_PROMPT_MAX ? text.slice(0, RUNWAY_PROMPT_MAX) : text;
+}
+
+function buildVideoPrompt(userPrompt, mode) {
+  const brief = String(userPrompt || "").trim();
+
+  if (mode === "interior") {
+    return clampVideoPrompt(
+      [
+        "Slow, smooth cinematic walkthrough of this exact room: gentle forward drift",
+        "with a subtle pan. The room stays completely unchanged in every frame —",
+        "same walls, windows, doors, furniture, and materials. Do not add furniture,",
+        "decor, people, or new lighting effects. Keep the existing lighting.",
+        "Photorealistic architectural interior footage.",
+        brief,
+      ].join(" ")
+    );
+  }
+
+  if (mode === "model_capture") {
+    return clampVideoPrompt(
+      [
+        "This is the client's exact building design. The geometry is final and stays",
+        "identical in every frame: same silhouette, storey count, roof form, window",
+        "positions, and materials. Camera: slow, steady push-in toward the building",
+        "with slight parallax. Do not orbit, do not reveal sides of the building not",
+        "visible in the source frame. The background stays exactly as shown — plain",
+        "clear sky and neutral ground. Do not add trees, water, landscape, roads,",
+        "fences, driveways, neighbouring buildings, cars, people, or any new objects.",
+        "Neutral clear daylight, no sunset. Photorealistic architectural footage.",
+        brief,
+      ].join(" ")
+    );
+  }
+
+  // default: exterior video
+  return clampVideoPrompt(
+    [
+      "This exact building stays completely unchanged in every frame — same shape,",
+      "storey count, roof, windows, and materials. Camera: slow, smooth arc with a",
+      "gentle push-in, staying close to the original viewpoint. The surroundings",
+      "stay exactly as shown in the source. Do not add trees, water, landscape,",
+      "roads, neighbouring buildings, cars, people, or any new objects. Neutral",
+      "clear daylight, no sunset. Photorealistic architectural footage.",
+      brief,
+    ].join(" ")
+  );
+}
+
 // ── Basic routes ─────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.json({ ok: true, name: "Monocular Server", status: "running" });
@@ -650,6 +721,14 @@ app.post("/render", async (req, res) => {
 });
 
 // ── Video (Runway) ───────────────────────────────────────────────────────────
+// Modes mirror the still-image pipeline:
+//   "interior"      — walkthrough motion, room locked
+//   "model_capture" — push-in only (no orbit), background locked to plain
+//                     sky/ground, full no-invention list
+//   default         — restrained arc near the source viewpoint, surroundings
+//                     locked to the source
+// The client must pass the SAME mode it used for the still render so the
+// video prompt matches the source (especially model captures).
 app.post("/api/video", async (req, res) => {
   try {
     const { prompt, imageBase64, images, mode = "render", email, subscriptionActive = false } = req.body;
@@ -711,10 +790,8 @@ app.post("/api/video", async (req, res) => {
 
     const runwayUri = uploadData.runwayUri;
 
-    const isInterior = mode === "interior";
-    const motion = isInterior
-      ? String(prompt) + ". Smooth cinematic walkthrough panning across the room with a gentle forward drift. Keep the room unchanged. Realistic architectural interior walkthrough."
-      : String(prompt) + ". Smooth cinematic orbit around the building, wide to close, gentle push in. Keep the building unchanged. Realistic architectural exterior walkthrough.";
+    const motion = buildVideoPrompt(prompt, mode);
+    console.log("Video prompt (" + motion.length + " chars, mode: " + mode + "):", motion);
 
     const r = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
       method: "POST",
