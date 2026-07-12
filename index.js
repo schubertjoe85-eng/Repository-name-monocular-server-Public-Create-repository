@@ -132,6 +132,23 @@ async function runRender(finalPrompt, base64Data) {
 // AND what the director is allowed to write in its tool call. The director's
 // prompt must be a fidelity instruction, never a scene description.
 //
+// model_capture anti-hallucination architecture (July 2026 rewrite):
+// The old approach fought hallucination with long negative ban lists. Two
+// problems: (1) image models weight nouns as content — a revised_prompt that
+// says "no trees, no lake" can literally summon trees and a lake; (2) long
+// prompts drift into scene-writing. The rewrite flips both:
+//   - SCENE CONTRACT: a whitelist. The output contains exactly three
+//     elements (building / plain sky / neutral ground). Anything not on the
+//     list doesn't exist, rather than being individually banned.
+//   - POSITIVE-ONLY tool prompt: the director keeps the ban list in its own
+//     head; the prompt it writes for the image model may only state what IS
+//     in the scene, never what isn't.
+//   - SHORT, TEMPLATED tool prompt: four fixed parts, <120 words, so there
+//     is no room for the director to write cinema.
+//   - "Product shot" framing: "photograph of a building" invites an invented
+//     site; "architectural visualisation on a seamless neutral background"
+//     doesn't.
+//
 // Modes:
 //   "interior"      — interior photo/sketch input
 //   "model_capture" — screenshot of the user's own 3D model from the in-app
@@ -197,12 +214,14 @@ function buildPrompt(userPrompt, mode) {
 
   if (mode === "model_capture") {
     return [
-      "You are an architectural visualisation engine. The attached image is a screenshot",
-      "of the client's OWN 3D MODEL, captured from a model viewer. It is not a sketch,",
-      "not a concept, and not a reference: it is dimensionally exact, authoritative",
-      "geometry. Your job is to convert it into a photograph of that EXACT building as",
-      "if it has been built and professionally photographed from this EXACT viewpoint.",
-      "You are a camera, not a designer. Zero tolerance for geometric deviation.",
+      "You are an architectural visualisation engine performing an IMAGE EDIT, not",
+      "creating a new picture. The attached image is a screenshot of the client's OWN",
+      "3D MODEL, captured from a model viewer. It is not a sketch, not a concept, and",
+      "not a reference: it is dimensionally exact, authoritative geometry. Your only",
+      "job is to change the SURFACE APPEARANCE from viewer clay to photorealistic",
+      "materials. The composition, camera, silhouette, and every edge stay exactly",
+      "where they are. You are a camera, not a designer. Zero tolerance for geometric",
+      "deviation.",
       "",
       "STEP 1 — ANALYSE the attached model capture before generating. Establish precisely:",
       "1. BUILDING TYPOLOGY: what type of building this model shows (detached house,",
@@ -215,14 +234,17 @@ function buildPrompt(userPrompt, mode) {
       "5. SURFACE STATE: whether the model is untextured clay (uniform grey/white) or",
       "   carries textures.",
       "",
-      "STEP 2 — EDIT the attached capture into a photorealistic photograph that preserves",
-      "every fact from your analysis:",
-      "- IDENTICAL typology, storey count, massing, footprint, roof form and pitch",
-      "- IDENTICAL camera position, angle, lens, and framing",
-      "- Every edge and plane exactly where the model places it — the silhouette of the",
-      "  output must overlay the silhouette of the input exactly",
-      "- Every window and door: same count, same positions, same sizes, same proportions.",
-      "  Do not add, remove, resize, merge, or reposition a single opening.",
+      "STEP 2 — SCENE CONTRACT. The output image contains EXACTLY three elements:",
+      "1. THE BUILDING — the model's geometry, unchanged: identical typology, storey",
+      "   count, massing, footprint, roof form and pitch; identical camera position,",
+      "   angle, lens, and framing; the silhouette of the output overlays the silhouette",
+      "   of the input exactly; every window and door at the same count, position, size,",
+      "   and proportion — none added, removed, resized, merged, or moved.",
+      "2. SKY — a plain, clear, neutral daytime sky. Soft even light. Empty.",
+      "3. GROUND — a flat, minimal, neutral ground plane consistent with the model's base.",
+      "That is the entire scene. If something is not one of these three elements and is",
+      "not named in the user brief, it does not exist in this image. The viewer's blank",
+      "backdrop is a studio backdrop, not a site — there is no site.",
       "",
       "MATERIALS — the model surface carries NO material meaning:",
       "- If the model is untextured clay, the grey/white surface is a placeholder, not a",
@@ -235,39 +257,42 @@ function buildPrompt(userPrompt, mode) {
       "- If the model carries textures, treat them as the specified materials and render",
       "  them convincingly.",
       "",
-      "DIRECTOR RULES — how you must write your prompt for the image generation tool:",
-      "- Your tool prompt is a FIDELITY INSTRUCTION, never a scene description.",
-      "- It must state that the source is the client's exact 3D model and that geometry",
-      "  is fixed and non-negotiable.",
-      "- It must restate as fixed facts: typology, exact storey count, camera angle and",
-      "  crop, the massing, and the opening inventory from your analysis.",
-      "- It must instruct: apply the brief's materials, physically correct neutral",
-      "  daylight, same framing; change nothing else.",
-      "- It must NOT contain scenic, atmospheric, or lifestyle language. Banned from",
-      "  your tool prompt unless named in the user brief: 'golden hour', 'sunset',",
-      "  'sunrise', 'dusk', 'nestled', 'surrounded by', 'set in', 'overlooking', and",
-      "  ANY description of landscape, vegetation, water, terrain, or setting.",
-      "- LIGHTING DEFAULT: neutral clear daytime. NEVER sunset or golden hour.",
-      "- BACKGROUND DEFAULT: the viewer background is a blank studio backdrop, not a",
-      "  site. Render a plain clear daytime sky and a minimal neutral ground plane",
-      "  consistent with the model's base. Nothing else, unless the brief names a setting.",
+      "DIRECTOR RULES — how you must write your prompt for the image generation tool.",
+      "Every word you write becomes the scene, so:",
+      "- POSITIVE STATEMENTS ONLY. Your tool prompt must never contain a negative",
+      "  instruction — never write 'no trees', 'do not add water', 'without",
+      "  landscaping', or any 'no/not/never/without' phrase. The image model treats",
+      "  every noun in the prompt as content to depict, so NAMING an unwanted object",
+      "  can summon it. Enforce every exclusion by OMISSION: simply never mention it.",
+      "- KEEP IT SHORT: under 120 words. Length is where scene-writing creeps in.",
+      "- Structure the tool prompt as exactly four parts, in this order, then stop:",
+      "  (a) the edit instruction: edit this exact image, preserving the silhouette,",
+      "      camera, framing, and every opening precisely;",
+      "  (b) the fixed facts from your analysis: typology, exact storey count, camera",
+      "      angle and crop;",
+      "  (c) the materials to apply, per the material rules above;",
+      "  (d) the environment, in these words: 'plain clear daytime sky, flat neutral",
+      "      ground plane, soft even neutral daylight'.",
+      "  Anything beyond these four parts is a defect.",
+      "- Describe the output as a 'photorealistic architectural visualisation on a",
+      "  seamless neutral background' — never as a 'photograph of a building', which",
+      "  invites an invented site around it.",
+      "- Scenic, atmospheric, and lifestyle language is banned from your tool prompt",
+      "  unless the user brief names it: 'golden hour', 'sunset', 'dusk', 'nestled',",
+      "  'surrounded by', 'set in', 'overlooking', and any description of landscape,",
+      "  vegetation, water, terrain, weather, or setting.",
       "",
-      "ONLY these may be added or improved:",
-      "- Photorealistic materials per the rules above, on the exact geometry shown",
-      "- Lighting realism: neutral natural daylight, physically correct shadows",
-      "- Photographic quality: sharp focus, high dynamic range — at the SAME camera angle",
-      "",
-      "STRICTLY FORBIDDEN unless named in the user brief:",
+      "OUTPUT BANS — these govern the final image. Enforce them through the SCENE",
+      "CONTRACT and by omission; never write them into your tool prompt as words.",
+      "Banned unless named in the user brief:",
       "- Changing the building typology or storey count",
-      "- Changing the camera position, angle, lens, or framing",
-      "- Zooming out, recentring, or recomposing the shot",
+      "- Changing the camera position, angle, lens, or framing; zooming out,",
+      "  recentring, or recomposing the shot",
       "- Any deviation from the model's edges, planes, proportions, or silhouette",
       "- 'Improving', 'refining', or 'correcting' the design in any way",
       "- Sunset, sunrise, golden-hour, or dusk lighting",
-      "- Lakes, rivers, ponds, billabongs, or any water body",
-      "- Trees, bushland, gardens, or landscaping of any kind",
-      "- Invented site context: driveways, fences, streetscapes, hills, or",
-      "  neighbouring buildings",
+      "- Water bodies, vegetation, landscaping, terrain, or invented site context of",
+      "  any kind (driveways, fences, streets, hills, neighbouring buildings)",
       "- Solar panels, green roofs, roof gardens, roof decks",
       "- LED strips, feature lighting, uplighting, illuminated signage",
       "- Louvres, screens, shutters, pergolas, awnings",
@@ -276,13 +301,13 @@ function buildPrompt(userPrompt, mode) {
       "- Cars, people, animals, text, labels, watermarks",
       "",
       "IF ANYTHING IS AMBIGUOUS, choose the PLAIN, CONVENTIONAL reading. A plain wall",
-      "stays plain. The blank backdrop stays a plain daytime sky. Never resolve",
-      "ambiguity with a striking or designer feature.",
+      "stays plain. The blank backdrop stays a plain daytime sky over neutral ground.",
+      "Never resolve ambiguity with a striking or designer feature.",
       "",
       "The user brief may specify materials, time of day, season, weather, and may name",
       "a setting. It never changes the building's typology, geometry, storey count, or",
       "the camera.",
-      "User brief: " + (userPrompt || "Photorealistic photograph of this exact building."),
+      "User brief: " + (userPrompt || "Photorealistic visualisation of this exact building."),
     ].join("\n");
   }
 
@@ -384,10 +409,17 @@ function buildPrompt(userPrompt, mode) {
 // worse with model captures, where the source is a single clay viewpoint on
 // a blank backdrop — a full orbit forces pure hallucination.
 //
+// July 2026: model_capture rewritten POSITIVE-ONLY. Runway, like the image
+// model, weights nouns as content — "do not add trees, water, roads" is a
+// prompt full of trees, water, and roads. The rewrite never names an
+// unwanted object; instead it states the complete scene as a whitelist
+// (building / plain sky / neutral ground) so everything else is excluded by
+// omission.
+//
 // Fixes:
 //   - model_capture: NO orbit. Slow push-in with slight parallax only, so the
-//     camera never has to reveal geometry the capture doesn't show. Background
-//     locked to plain sky / neutral ground; the standard no-invention list.
+//     camera never has to reveal geometry the capture doesn't show. Scene
+//     stated as a three-element whitelist; no negative phrases at all.
 //   - default exterior: restrained arc that stays near the source viewpoint
 //     instead of a wide-to-close orbit; same no-invention list.
 //   - interior: unchanged walkthrough intent, but with explicit "room stays
@@ -417,14 +449,14 @@ function buildVideoPrompt(userPrompt, mode) {
   if (mode === "model_capture") {
     return clampVideoPrompt(
       [
-        "This is the client's exact building design. The geometry is final and stays",
-        "identical in every frame: same silhouette, storey count, roof form, window",
-        "positions, and materials. Camera: slow, steady push-in toward the building",
-        "with slight parallax. Do not orbit, do not reveal sides of the building not",
-        "visible in the source frame. The background stays exactly as shown — plain",
-        "clear sky and neutral ground. Do not add trees, water, landscape, roads,",
-        "fences, driveways, neighbouring buildings, cars, people, or any new objects.",
-        "Neutral clear daylight, no sunset. Photorealistic architectural footage.",
+        "Photorealistic architectural visualisation footage of the client's exact",
+        "building design on a seamless neutral background. Every frame contains",
+        "exactly three elements: the building, with identical silhouette, storey",
+        "count, roof form, window positions, and materials in every frame; a plain",
+        "clear daytime sky; and a flat neutral ground plane. Camera: one slow,",
+        "steady push-in toward the building with slight parallax, holding the",
+        "source viewpoint so only the surfaces visible in the source frame ever",
+        "appear. Soft, even, neutral daylight throughout.",
         brief,
       ].join(" ")
     );
@@ -723,8 +755,9 @@ app.post("/render", async (req, res) => {
 // ── Video (Runway) ───────────────────────────────────────────────────────────
 // Modes mirror the still-image pipeline:
 //   "interior"      — walkthrough motion, room locked
-//   "model_capture" — push-in only (no orbit), background locked to plain
-//                     sky/ground, full no-invention list
+//   "model_capture" — push-in only (no orbit), scene stated as a positive
+//                     three-element whitelist (building / plain sky / neutral
+//                     ground); unwanted objects excluded by never naming them
 //   default         — restrained arc near the source viewpoint, surroundings
 //                     locked to the source
 // The client must pass the SAME mode it used for the still render so the
