@@ -906,11 +906,33 @@ app.get("/api/video/:id/content", async (req, res) => {
   }
 });
 
-// ── Keep-alive ping (Render free tier) ───────────────────────────────────────
+// ── Keep-alive pings ─────────────────────────────────────────────────────────
+// 1. Render (free tier spins down idle services): ping our own /health every
+//    10 minutes so the server stays awake.
+// 2. Supabase (free tier pauses projects with no activity for ~1 week): run a
+//    trivial query every 12 hours so the project registers activity. The
+//    service_role key bypasses RLS, so this works with no policies on the
+//    table. Depends on ping #1 keeping this process alive.
 const SELF_URL = "https://monocular-server.onrender.com/health";
 setInterval(function () {
   fetch(SELF_URL).then(function () {}).catch(function () {});
 }, 600000);
+
+function pingSupabase() {
+  supabase
+    .from("credits")
+    .select("email")
+    .limit(1)
+    .then(function () {
+      console.log("Supabase keep-alive ping OK");
+    })
+    .catch(function (e) {
+      console.error("Supabase keep-alive ping failed:", e.message);
+    });
+}
+
+pingSupabase(); // fire once at startup (covers frequent restarts)
+setInterval(pingSupabase, 1000 * 60 * 60 * 12); // then every 12 hours
 
 app.listen(PORT, () => {
   console.log("Monocular server running on port " + PORT);
