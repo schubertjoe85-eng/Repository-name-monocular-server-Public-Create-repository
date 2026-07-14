@@ -81,7 +81,11 @@ setInterval(function () {
 // and the background job runner.
 async function runRender(finalPrompt, base64Data) {
   const response = await openai.responses.create({
-    model: "gpt-5.5",
+    // Director model. GPT-5.6 superseded 5.5; Terra is the balanced tier
+    // (the recommended starting point for workloads previously on 5.5).
+    // Swap to "gpt-5.6" (routes to Sol, ~2x cost) if Terra's template
+    // adherence or geometry analysis proves weaker on real captures.
+    model: "gpt-5.6-terra",
     input: [
       {
         role: "user",
@@ -143,7 +147,7 @@ async function runRender(finalPrompt, base64Data) {
 //   - POSITIVE-ONLY tool prompt: the director keeps the ban list in its own
 //     head; the prompt it writes for the image model may only state what IS
 //     in the scene, never what isn't.
-//   - SHORT, TEMPLATED tool prompt: four fixed parts, <120 words, so there
+//   - SHORT, TEMPLATED tool prompt: fixed parts, tight word cap, so there
 //     is no room for the director to write cinema.
 //   - "Product shot" framing: "photograph of a building" invites an invented
 //     site; "architectural visualisation on a seamless neutral background"
@@ -154,17 +158,20 @@ async function runRender(finalPrompt, base64Data) {
 // visual cues, and a clay capture on a blank backdrop has almost none.
 // Left unanchored, the model defaults to "generic building" proportions,
 // typically inflating domestic buildings toward something grander. Fixes:
-//   - SCALE DATUM (new STEP 1 item): the director derives real metre
+//   - SCALE DATUM (STEP 1 item 3): the director derives real metre
 //     dimensions from the geometry itself, using doors (~2.1m) and storeys
 //     (~2.7–3.0m) as rulers, and states height/width and the aspect ratio.
 //   - PROPORTION LOCK (in the scene contract): height-to-width ratio,
 //     opening-to-wall proportions, and material coursing (brick courses,
 //     cladding board widths) must agree with the datum — wrong-scale
 //     coursing is the main way renders silently imply a bigger building.
+//   - DIRECTOR RULES now carry the datum into the tool prompt: the
+//     five-part template includes the scale facts as POSITIVE statements
+//     (metre dimensions + a standard-sized element as an in-prompt ruler,
+//     e.g. 'standard 2.1m entry door', 'standard-format brick coursing').
+//     Never phrased negatively — 'not monumental' summons monumental.
 //   - Ambiguous scale resolves to standard Australian residential
 //     dimensions rather than the model's generic-building prior.
-// NOTE: DIRECTOR RULES unchanged in this pass — the scale facts only reach
-// the image model once the tool-prompt template carries them (next rewrite).
 //
 // Modes:
 //   "interior"      — interior photo/sketch input
@@ -295,23 +302,37 @@ function buildPrompt(userPrompt, mode) {
       "  landscaping', or any 'no/not/never/without' phrase. The image model treats",
       "  every noun in the prompt as content to depict, so NAMING an unwanted object",
       "  can summon it. Enforce every exclusion by OMISSION: simply never mention it.",
-      "- KEEP IT SHORT: under 120 words. Length is where scene-writing creeps in.",
-      "- Structure the tool prompt as exactly four parts, in this order, then stop:",
+      "  This applies to SCALE as well: never write 'not monumental', 'not oversized',",
+      "  or 'no exaggeration' — state the building's true size as a positive fact",
+      "  instead, and the wrong scale is excluded automatically.",
+      "- KEEP IT SHORT: under 140 words. Length is where scene-writing creeps in.",
+      "- Structure the tool prompt as exactly five parts, in this order, then stop:",
       "  (a) the edit instruction: edit this exact image, preserving the silhouette,",
-      "      camera, framing, and every opening precisely;",
+      "      camera, framing, every opening, and all proportions precisely;",
       "  (b) the fixed facts from your analysis: typology, exact storey count, camera",
       "      angle and crop;",
-      "  (c) the materials to apply, per the material rules above;",
-      "  (d) the environment, in these words: 'plain clear daytime sky, flat neutral",
+      "  (c) the SCALE DATUM as positive facts: the building's approximate overall",
+      "      height and width in metres, and its scale in plain words — e.g.",
+      "      'a single-storey domestic pool house, approximately 3.2 metres tall and",
+      "      8 metres wide, with a standard 2.1-metre entry door'. Always include at",
+      "      least one standard-sized element already present in the geometry (an",
+      "      entry door, a storey height) — a named standard-sized element acts as",
+      "      a ruler inside the prompt.",
+      "  (d) the materials to apply, per the material rules above, sized to the",
+      "      stated dimensions — e.g. 'standard-format brick coursing',",
+      "      'standard-width cladding boards';",
+      "  (e) the environment, in these words: 'plain clear daytime sky, flat neutral",
       "      ground plane, soft even neutral daylight'.",
-      "  Anything beyond these four parts is a defect.",
+      "  Anything beyond these five parts is a defect.",
       "- Describe the output as a 'photorealistic architectural visualisation on a",
       "  seamless neutral background' — never as a 'photograph of a building', which",
       "  invites an invented site around it.",
       "- Scenic, atmospheric, and lifestyle language is banned from your tool prompt",
       "  unless the user brief names it: 'golden hour', 'sunset', 'dusk', 'nestled',",
       "  'surrounded by', 'set in', 'overlooking', and any description of landscape,",
-      "  vegetation, water, terrain, weather, or setting.",
+      "  vegetation, water, terrain, weather, or setting. Grandeur language is banned",
+      "  unconditionally: 'grand', 'imposing', 'striking', 'monumental', 'sweeping',",
+      "  'expansive', 'soaring' — these words inflate the building's rendered scale.",
       "",
       "OUTPUT BANS — these govern the final image. Enforce them through the SCENE",
       "CONTRACT and by omission; never write them into your tool prompt as words.",
