@@ -149,6 +149,23 @@ async function runRender(finalPrompt, base64Data) {
 //     site; "architectural visualisation on a seamless neutral background"
 //     doesn't.
 //
+// model_capture scale-anchoring (July 2026, second rewrite):
+// The image model has no metric understanding — scale is inferred from
+// visual cues, and a clay capture on a blank backdrop has almost none.
+// Left unanchored, the model defaults to "generic building" proportions,
+// typically inflating domestic buildings toward something grander. Fixes:
+//   - SCALE DATUM (new STEP 1 item): the director derives real metre
+//     dimensions from the geometry itself, using doors (~2.1m) and storeys
+//     (~2.7–3.0m) as rulers, and states height/width and the aspect ratio.
+//   - PROPORTION LOCK (in the scene contract): height-to-width ratio,
+//     opening-to-wall proportions, and material coursing (brick courses,
+//     cladding board widths) must agree with the datum — wrong-scale
+//     coursing is the main way renders silently imply a bigger building.
+//   - Ambiguous scale resolves to standard Australian residential
+//     dimensions rather than the model's generic-building prior.
+// NOTE: DIRECTOR RULES unchanged in this pass — the scale facts only reach
+// the image model once the tool-prompt template carries them (next rewrite).
+//
 // Modes:
 //   "interior"      — interior photo/sketch input
 //   "model_capture" — screenshot of the user's own 3D model from the in-app
@@ -219,19 +236,27 @@ function buildPrompt(userPrompt, mode) {
       "3D MODEL, captured from a model viewer. It is not a sketch, not a concept, and",
       "not a reference: it is dimensionally exact, authoritative geometry. Your only",
       "job is to change the SURFACE APPEARANCE from viewer clay to photorealistic",
-      "materials. The composition, camera, silhouette, and every edge stay exactly",
-      "where they are. You are a camera, not a designer. Zero tolerance for geometric",
-      "deviation.",
+      "materials. The composition, camera, silhouette, every edge, and the building's",
+      "real-world scale stay exactly where they are. You are a camera, not a designer.",
+      "Zero tolerance for geometric or proportional deviation.",
       "",
       "STEP 1 — ANALYSE the attached model capture before generating. Establish precisely:",
       "1. BUILDING TYPOLOGY: what type of building this model shows (detached house,",
       "   pool house, tower, etc.). Never change it.",
       "2. STOREY COUNT: count the levels in the model. The output contains exactly this many.",
-      "3. CAMERA: the viewer's camera position, height, angle, tilt, and crop. The output",
+      "3. SCALE DATUM: establish the building's real-world size from its own geometry.",
+      "   Use the openings as rulers — an entry door is approximately 2.1m tall; a",
+      "   residential storey is approximately 2.7–3.0m floor-to-floor. From these,",
+      "   state the building's approximate overall height and width in metres, and",
+      "   its height-to-width ratio. The output reads at exactly this size: a",
+      "   single-storey domestic building reads as a modest domestic building a",
+      "   person could walk up to, never as a monumental or civic-scaled structure.",
+      "4. CAMERA: the viewer's camera position, height, angle, tilt, and crop. The output",
       "   is framed identically — never reframe, recentre, zoom, or pull back.",
-      "4. GEOMETRY INVENTORY: every wall plane, roof plane and pitch, edge, cantilever,",
-      "   setback, opening (window/door), and their exact positions, sizes, and proportions.",
-      "5. SURFACE STATE: whether the model is untextured clay (uniform grey/white) or",
+      "5. GEOMETRY INVENTORY: every wall plane, roof plane and pitch, edge, cantilever,",
+      "   setback, opening (window/door), and their exact positions, sizes, and",
+      "   proportions — including each opening's size RELATIVE to its wall.",
+      "6. SURFACE STATE: whether the model is untextured clay (uniform grey/white) or",
       "   carries textures.",
       "",
       "STEP 2 — SCENE CONTRACT. The output image contains EXACTLY three elements:",
@@ -240,6 +265,12 @@ function buildPrompt(userPrompt, mode) {
       "   angle, lens, and framing; the silhouette of the output overlays the silhouette",
       "   of the input exactly; every window and door at the same count, position, size,",
       "   and proportion — none added, removed, resized, merged, or moved.",
+      "   PROPORTION LOCK: the building renders at the real-world scale established in",
+      "   your SCALE DATUM. Its height-to-width ratio, storey heights, wall heights,",
+      "   and every opening's size relative to its wall match the input exactly.",
+      "   Material coursing must agree with that scale — brick courses, cladding board",
+      "   widths, roof sheeting profiles, and door hardware are sized so the building",
+      "   reads at its true metre dimensions, never larger and never smaller.",
       "2. SKY — a plain, clear, neutral daytime sky. Soft even light. Empty.",
       "3. GROUND — a flat, minimal, neutral ground plane consistent with the model's base.",
       "That is the entire scene. If something is not one of these three elements and is",
@@ -250,12 +281,12 @@ function buildPrompt(userPrompt, mode) {
       "- If the model is untextured clay, the grey/white surface is a placeholder, not a",
       "  finish. Do NOT render a grey concrete or white rendered building by default.",
       "- Materials come from the user brief ONLY. If the brief names materials, apply",
-      "  them to the exact geometry shown.",
+      "  them to the exact geometry shown, coursed and sized to the SCALE DATUM.",
       "- If the brief names no materials, use plain, conventional Australian residential",
       "  materials (e.g. brick or standard cladding walls, Colorbond-style metal or tiled",
-      "  roof) applied without changing any geometry.",
+      "  roof) applied without changing any geometry, coursed to the SCALE DATUM.",
       "- If the model carries textures, treat them as the specified materials and render",
-      "  them convincingly.",
+      "  them convincingly at the established scale.",
       "",
       "DIRECTOR RULES — how you must write your prompt for the image generation tool.",
       "Every word you write becomes the scene, so:",
@@ -286,6 +317,11 @@ function buildPrompt(userPrompt, mode) {
       "CONTRACT and by omission; never write them into your tool prompt as words.",
       "Banned unless named in the user brief:",
       "- Changing the building typology or storey count",
+      "- Changing the building's scale or proportions: enlarging, heightening,",
+      "  monumentalizing, or shrinking the structure; stretching or compressing its",
+      "  height-to-width ratio; resizing openings relative to their walls; rendering",
+      "  material coursing (brick, cladding, roofing) at a size that implies a",
+      "  larger or smaller building than the SCALE DATUM",
       "- Changing the camera position, angle, lens, or framing; zooming out,",
       "  recentring, or recomposing the shot",
       "- Any deviation from the model's edges, planes, proportions, or silhouette",
@@ -300,13 +336,15 @@ function buildPrompt(userPrompt, mode) {
       "- Extra windows, doors, skylights, dormers, chimneys, balconies, or storeys",
       "- Cars, people, animals, text, labels, watermarks",
       "",
-      "IF ANYTHING IS AMBIGUOUS, choose the PLAIN, CONVENTIONAL reading. A plain wall",
-      "stays plain. The blank backdrop stays a plain daytime sky over neutral ground.",
+      "IF ANYTHING IS AMBIGUOUS, choose the PLAIN, CONVENTIONAL reading. If scale is",
+      "ambiguous, read the building at standard Australian residential dimensions:",
+      "2.1m doors, 2.4–2.7m ceilings, 2.7–3.0m floor-to-floor. A plain wall stays",
+      "plain. The blank backdrop stays a plain daytime sky over neutral ground.",
       "Never resolve ambiguity with a striking or designer feature.",
       "",
       "The user brief may specify materials, time of day, season, weather, and may name",
-      "a setting. It never changes the building's typology, geometry, storey count, or",
-      "the camera.",
+      "a setting. It never changes the building's typology, geometry, storey count,",
+      "scale, proportions, or the camera.",
       "User brief: " + (userPrompt || "Photorealistic visualisation of this exact building."),
     ].join("\n");
   }
