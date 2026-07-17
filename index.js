@@ -767,6 +767,130 @@ app.get("/render/status/:jobId", (req, res) => {
   return res.json({ ok: true, status: "done", image });
 });
 
+// ═════════════════════════════════════════════════════════════
+// DESKTOP / ARCHICAD PLUGIN API
+// Auth: x-monocular-token header → api_tokens table (user_id = email).
+// Renders spend credits (1 per render, refunded on failure).
+// Polling reuses the existing GET /render/status/:jobId.
+// ═════════════════════════════════════════════════════════════
+
+async function requireApiToken(req, res, next) {
+  try {
+    const token = req.header("x-monocular-token");
+    if (!token) {
+      return res.status(401).json({ ok: false, error: "Missing x-monocular-token header" });
+    }
+    const { data, error } = await supabase
+      .from("api_tokens")
+      .select("token, user_id, label")
+      .eq("token", token)
+      .single();
+    if (error || !data) {
+      return res.status(401).json({ ok: false, error: "Invalid token" });
+    }
+    supabase
+      .from("api_tokens")
+      .update({ last_used_at: new Date().toISOString() })
+      .eq("token", token)
+      .then(() => {});
+    req.desktopUser = data;
+    next();
+  } catch (err) {
+    console.error("requireApiToken error:", err);
+    res.status(500).json({ ok: false, error: "Auth check failed" });
+  }
+}
+
+// Real CAD dimensions from ArchiCAD → exact scale grounding for the director.
+function buildScaleDatumFromDimensions(dimensions) {
+  if (!dimensions) return null;
+  const { widthM, depthM, heightM, storeys } = dimensions;
+  const parts = [];
+  if (widthM && depthM) parts.push(`overall footprint ${widthM}m x ${depthM}m`);
+  if (heightM) parts.push(`overall height ${heightM}m`);
+  if (storeys) parts.push(`${storeys} storey${storeys > 1 ? "s" : ""}`);
+  if (parts.length === 0) return null;
+  return (
+    "SCALE DATUM (measured directly from the CAD model — exact, not estimated): " +
+    parts.join(", ") +
+    ". A standard door is 2.1m tall. All proportions in the output must match these measurements."
+  );
+}
+
+// POST /desktop/render/start
+// Body: { imageBase64, prompt, mode?, dimensions?: { widthM, depthM, heightM, storeys } }
+// Returns: { ok, jobId } — poll GET /render/status/:jobId as usual.
+app.post("/desktop/render/start", requireApiToken, async (req, res) => {
+  try {
+    const { prompt, imageBase64, mode = "model_capture", dimensions } = req.body || {};
+    if (!imageBase64) {
+      return res.status(400).json({ ok: false, error: "Missing imageBase64." });
+    }
+
+    const email = req.desktopUser.user_id;
+
+    // Desktop renders are credit-only (no free tier, no subscription flag).
+    const balance = await getCreditBalance(email);
+    if (balance <= 0) {
+      return res.status(402).json({ ok: false, error: "No credits on " + email + ". Top up to render." });
+    }
+
+    // Deduct one credit up front; refunded below if the render fails.
+    const { error: deductErr } = await supabase
+      .from("credits")
+      .update({ balance: balance - 1, updated_at: new Date().toISOString() })
+      .eq("email", email);
+    if (deductErr) {
+      console.error("Desktop credit deduct failed:", deductErr);
+      return res.status(500).json({ ok: false, error: "Credit deduction failed." });
+    }
+
+    // Append the exact CAD measurements to the user brief.
+    const scaleDatum = buildScaleDatumFromDimensions(dimensions);
+    const briefWithScale = scaleDatum
+      ? (prompt ? prompt + "\n\n" + scaleDatum : scaleDatum)
+      : prompt;
+
+    console.log("Desktop brief received:", JSON.stringify(briefWithScale), "mode:", mode, "user:", email);
+
+    const finalPrompt = buildPrompt(briefWithScale, mode);
+    const base64Data = imageBase64.startsWith("data:")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
+
+    const jobId = crypto.randomUUID();
+    renderJobs[jobId] = { status: "pending", createdAt: Date.now() };
+
+    runRender(finalPrompt, base64Data)
+      .then((image) => {
+        renderJobs[jobId] = { status: "done", image, createdAt: Date.now() };
+      })
+      .catch(async (error) => {
+        console.error("Desktop render job " + jobId + " failed:", error);
+        // Refund the credit on failure.
+        try {
+          const current = await getCreditBalance(email);
+          await supabase
+            .from("credits")
+            .update({ balance: current + 1, updated_at: new Date().toISOString() })
+            .eq("email", email);
+        } catch (refundErr) {
+          console.error("Credit refund failed for " + email + ":", refundErr);
+        }
+        renderJobs[jobId] = {
+          status: "failed",
+          error: error.message || "Render failed.",
+          createdAt: Date.now(),
+        };
+      });
+
+    return res.json({ ok: true, jobId, statusUrl: "/render/status/" + jobId });
+  } catch (error) {
+    console.error("Desktop render start error:", error);
+    return res.status(500).json({ ok: false, error: error.message || "Render failed." });
+  }
+});
+
 // ── Render (legacy synchronous endpoint) ─────────────────────────────────────
 // Kept for the shipped App Store build (1.0.x), which calls POST /render and
 // waits for the image in one request. Subject to Render's ~100s proxy
