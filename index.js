@@ -760,8 +760,16 @@ app.get("/render/status/:jobId", (req, res) => {
   if (job.status === "failed") {
     return res.json({ ok: false, status: "failed", error: job.error });
   }
-  // done — return the image and free the memory immediately rather than
+  // done — return the result and free the memory immediately rather than
   // waiting for the TTL sweep (images are multi-megabyte strings).
+  // Video jobs carry a `video` URL instead of a base64 `image`; return
+  // whichever this job produced so the desktop bench can poll one endpoint
+  // for both stills and video.
+  if (job.video) {
+    const video = job.video;
+    delete renderJobs[req.params.jobId];
+    return res.json({ ok: true, status: "done", video });
+  }
   const image = job.image;
   delete renderJobs[req.params.jobId];
   return res.json({ ok: true, status: "done", image });
@@ -770,7 +778,7 @@ app.get("/render/status/:jobId", (req, res) => {
 // ═════════════════════════════════════════════════════════════
 // DESKTOP / ARCHICAD PLUGIN API
 // Auth: x-monocular-token header → api_tokens table (user_id = email).
-// Renders spend credits (1 per render, refunded on failure).
+// Renders spend credits (1 per still, 5/10 per video), refunded on failure.
 // Polling reuses the existing GET /render/status/:jobId.
 // ═════════════════════════════════════════════════════════════
 
@@ -816,6 +824,19 @@ function buildScaleDatumFromDimensions(dimensions) {
     ". A standard door is 2.1m tall. All proportions in the output must match these measurements."
   );
 }
+
+// GET /desktop/balance — returns the token owner's current credit balance.
+// The desktop bench calls this on save and when the credits pill is tapped.
+app.get("/desktop/balance", requireApiToken, async (req, res) => {
+  try {
+    const email = req.desktopUser.user_id;
+    const balance = await getCreditBalance(email);
+    res.json({ ok: true, balance, email });
+  } catch (error) {
+    console.error("Desktop balance error:", error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
 // POST /desktop/render/start
 // Body: { imageBase64, prompt, mode?, dimensions?: { widthM, depthM, heightM, storeys } }
@@ -888,6 +909,198 @@ app.post("/desktop/render/start", requireApiToken, async (req, res) => {
   } catch (error) {
     console.error("Desktop render start error:", error);
     return res.status(500).json({ ok: false, error: error.message || "Render failed." });
+  }
+});
+
+// ── Desktop video job runner ─────────────────────────────────────────────────
+// Mirrors runRender for the async job store, but drives Runway end to end:
+// upload the source frame, start an image_to_video task, then poll Runway
+// server-side until the task finishes and resolve the output URL. Runway
+// polling happens here (not in the client) so the desktop bench polls one
+// endpoint — GET /render/status/:jobId — for both stills and video.
+async function runDesktopVideo(motion, base64Data, ratio) {
+  const imageBuffer = Buffer.from(base64Data, "base64");
+
+  // 1. Init an ephemeral upload.
+  const uploadInit = await fetch("https://api.dev.runwayml.com/v1/uploads", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + process.env.RUNWAY_API_KEY,
+      "Content-Type": "application/json",
+      "X-Runway-Version": "2024-11-06",
+    },
+    body: JSON.stringify({
+      type: "ephemeral",
+      contentType: "image/png",
+      contentLength: imageBuffer.length,
+      filename: "source.png",
+    }),
+  });
+  const uploadData = await uploadInit.json();
+  if (!uploadInit.ok || !uploadData.runwayUri) {
+    console.error("Runway upload init failed:", JSON.stringify(uploadData));
+    throw new Error("Upload init failed.");
+  }
+
+  // 2. Push the bytes to the signed URL (form-POST or PUT, per the init).
+  if (uploadData.fields) {
+    const formData = new FormData();
+    Object.entries(uploadData.fields).forEach(([key, value]) => {
+      formData.append(key, value);
+    });
+    formData.append("file", new Blob([imageBuffer], { type: "image/png" }), "source.png");
+    await fetch(uploadData.uploadUrl, { method: "POST", body: formData });
+  } else {
+    await fetch(uploadData.uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": "image/png" },
+      body: imageBuffer,
+    });
+  }
+
+  const runwayUri = uploadData.runwayUri;
+
+  // 3. Start the video task. Duration is fixed by the caller (5 or 10s);
+  //    ratio is 1280:720 (landscape) or 720:1280 (portrait) from the bench.
+  const startRes = await fetch("https://api.dev.runwayml.com/v1/image_to_video", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + process.env.RUNWAY_API_KEY,
+      "Content-Type": "application/json",
+      "X-Runway-Version": "2024-11-06",
+    },
+    body: JSON.stringify({
+      model: "gen4.5",
+      promptImage: runwayUri,
+      promptText: motion,
+      ratio,
+    }),
+  });
+  const startData = await startRes.json();
+  if (!startRes.ok || !startData.id) {
+    console.error("Runway video start failed:", JSON.stringify(startData));
+    throw new Error("Video task failed to start.");
+  }
+  const taskId = startData.id;
+
+  // 4. Poll Runway until the task resolves. Cap the wait well under the
+  //    job TTL so a stuck task can't pin memory forever.
+  const deadline = Date.now() + 8 * 60 * 1000; // 8 minutes
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const pollRes = await fetch("https://api.dev.runwayml.com/v1/tasks/" + taskId, {
+      headers: {
+        Authorization: "Bearer " + process.env.RUNWAY_API_KEY,
+        "X-Runway-Version": "2024-11-06",
+      },
+    });
+    const pollData = await pollRes.json();
+    if (pollData.status === "SUCCEEDED") {
+      const url = pollData.output && pollData.output[0] ? pollData.output[0] : null;
+      if (!url) throw new Error("Video finished but no output URL.");
+      return url;
+    }
+    if (pollData.status === "FAILED") {
+      throw new Error(pollData.failure || "Runway reported the video task failed.");
+    }
+    // PENDING / RUNNING / THROTTLED → keep waiting.
+  }
+  throw new Error("Video timed out waiting on Runway.");
+}
+
+// POST /desktop/video/start
+// Body: { imageBase64, prompt, mode?, dimensions?, duration?: 5|10,
+//         ratio?: "1280:720"|"720:1280" }
+// Same token auth + credit gate + refund pattern as the stills endpoint.
+// Costs match the bench: 5s → 5 credits, 10s → 10 credits.
+// Returns: { ok, jobId } — poll GET /render/status/:jobId; a finished video
+// job returns { status: "done", video: <url> }.
+app.post("/desktop/video/start", requireApiToken, async (req, res) => {
+  try {
+    const {
+      prompt,
+      imageBase64,
+      mode = "model_capture",
+      dimensions,
+      duration = 5,
+      ratio = "1280:720",
+    } = req.body || {};
+
+    if (!imageBase64) {
+      return res.status(400).json({ ok: false, error: "Missing imageBase64." });
+    }
+
+    // Normalise inputs — the cost and the Runway request depend on them.
+    const seconds = Number(duration) === 10 ? 10 : 5;
+    const cost = seconds; // 5s → 5 credits, 10s → 10 credits
+    const safeRatio = ratio === "720:1280" ? "720:1280" : "1280:720";
+
+    const email = req.desktopUser.user_id;
+
+    const balance = await getCreditBalance(email);
+    if (balance < cost) {
+      return res.status(402).json({
+        ok: false,
+        error: "Not enough credits on " + email + " — a " + seconds + "s video costs " + cost + ".",
+      });
+    }
+
+    // Deduct up front; refunded in full if the video fails.
+    const { error: deductErr } = await supabase
+      .from("credits")
+      .update({ balance: balance - cost, updated_at: new Date().toISOString() })
+      .eq("email", email);
+    if (deductErr) {
+      console.error("Desktop video credit deduct failed:", deductErr);
+      return res.status(500).json({ ok: false, error: "Credit deduction failed." });
+    }
+
+    // Fold the exact CAD measurements into the brief as positive scale facts,
+    // exactly as the stills path does.
+    const scaleDatum = buildScaleDatumFromDimensions(dimensions);
+    const briefWithScale = scaleDatum
+      ? (prompt ? prompt + "\n\n" + scaleDatum : scaleDatum)
+      : prompt;
+
+    const motion = buildVideoPrompt(briefWithScale, mode);
+    console.log(
+      "Desktop video brief (" + motion.length + " chars, " + seconds + "s " + safeRatio + ", mode: " + mode + ", user: " + email + ")"
+    );
+
+    const base64Data = imageBase64.startsWith("data:")
+      ? imageBase64.split(",")[1]
+      : imageBase64;
+
+    const jobId = crypto.randomUUID();
+    renderJobs[jobId] = { status: "pending", createdAt: Date.now() };
+
+    runDesktopVideo(motion, base64Data, safeRatio)
+      .then((video) => {
+        renderJobs[jobId] = { status: "done", video, createdAt: Date.now() };
+      })
+      .catch(async (error) => {
+        console.error("Desktop video job " + jobId + " failed:", error);
+        // Refund the full cost on failure.
+        try {
+          const current = await getCreditBalance(email);
+          await supabase
+            .from("credits")
+            .update({ balance: current + cost, updated_at: new Date().toISOString() })
+            .eq("email", email);
+        } catch (refundErr) {
+          console.error("Video credit refund failed for " + email + ":", refundErr);
+        }
+        renderJobs[jobId] = {
+          status: "failed",
+          error: error.message || "Video failed.",
+          createdAt: Date.now(),
+        };
+      });
+
+    return res.json({ ok: true, jobId, statusUrl: "/render/status/" + jobId });
+  } catch (error) {
+    console.error("Desktop video start error:", error);
+    return res.status(500).json({ ok: false, error: error.message || "Video failed." });
   }
 });
 
