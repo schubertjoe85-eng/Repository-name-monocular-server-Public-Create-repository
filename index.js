@@ -918,7 +918,15 @@ app.post("/desktop/render/start", requireApiToken, async (req, res) => {
 // server-side until the task finishes and resolve the output URL. Runway
 // polling happens here (not in the client) so the desktop bench polls one
 // endpoint — GET /render/status/:jobId — for both stills and video.
-async function runDesktopVideo(motion, base64Data, ratio) {
+//
+// FIX (July 2026): the Runway image_to_video start call was missing the
+// `duration` field entirely — only `ratio` was ever passed. That leaves
+// Runway to reject or default the task in a way that yields no `id`,
+// which runDesktopVideo throws as "Video task failed to start." This is
+// the direct cause of "video failed to start" on the desktop bench.
+// `duration` is now threaded through from the caller (5 or 10, matching
+// the credit cost) and included in the request body below.
+async function runDesktopVideo(motion, base64Data, ratio, duration) {
   const imageBuffer = Buffer.from(base64Data, "base64");
 
   // 1. Init an ephemeral upload.
@@ -974,6 +982,7 @@ async function runDesktopVideo(motion, base64Data, ratio) {
       promptImage: runwayUri,
       promptText: motion,
       ratio,
+      duration,
     }),
   });
   const startData = await startRes.json();
@@ -1074,7 +1083,7 @@ app.post("/desktop/video/start", requireApiToken, async (req, res) => {
     const jobId = crypto.randomUUID();
     renderJobs[jobId] = { status: "pending", createdAt: Date.now() };
 
-    runDesktopVideo(motion, base64Data, safeRatio)
+    runDesktopVideo(motion, base64Data, safeRatio, seconds)
       .then((video) => {
         renderJobs[jobId] = { status: "done", video, createdAt: Date.now() };
       })
