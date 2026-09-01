@@ -844,8 +844,11 @@ async function runRunwayVideoTask(motion, base64Data, ratio, duration) {
   });
   const startData = await startRes.json();
   if (!startRes.ok || !startData.id) {
-    console.error("Runway video start failed:", JSON.stringify(startData));
-    throw new Error("Video task failed to start.");
+    const detail = JSON.stringify(startData);
+    console.error("Runway video start failed:", startRes.status, detail);
+    throw new Error(
+      "Video task failed to start (Runway " + startRes.status + "): " + detail
+    );
   }
   const taskId = startData.id;
 
