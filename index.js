@@ -1191,7 +1191,11 @@ function concatMp4Files(inputPaths, outputPath) {
 // clip, no concat needed. 2-3 images -> shorter per-clip duration so the
 // combined video lands around 10-12s total.
 async function runMultiAngleVideo(images, prompt, mode, ratio) {
-  const perClipSeconds = images.length >= 3 ? 4 : images.length === 2 ? 5 : 10;
+  const rawPerClipSeconds = images.length >= 3 ? 4 : images.length === 2 ? 5 : 10;
+  // Runway duration is an enum: 5 or 10 only.
+  const perClipSeconds = [5, 10].includes(Number(rawPerClipSeconds))
+    ? Number(rawPerClipSeconds)
+    : 5;
   const motion = buildVideoPrompt(prompt, mode);
 
   const clipUrls = [];
