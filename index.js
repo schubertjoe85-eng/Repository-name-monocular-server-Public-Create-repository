@@ -396,16 +396,39 @@ function clampVideoPrompt(text) {
 }
 
 function buildVideoPrompt(userPrompt, mode) {
-  if (mode !== "model_capture") return userPrompt;
-  const hold =
-    "The building geometry is fixed and must not change: keep the exact roof form, " +
-    "wall planes, window and door positions, and overall massing identical to the source image. " +
-    "Do not add or remove any part of the structure.";
-  const add =
-    "Add only: natural lighting and shadow movement, sky and atmosphere, " +
-    "landscaping and planting, outdoor furniture, and people moving naturally.";
-  const camera = "Slow steady camera move. No cuts, no scene change.";
-  return hold + " " + add + " " + userPrompt + ". " + camera;
+  const brief = String(userPrompt || "").trim();
+
+  const HOLD =
+    "The building is fixed: identical silhouette, storey count, roof form, " +
+    "wall planes, window and door positions and materials in every frame. " +
+    "Do not add, remove or reshape any part of the structure.";
+
+  if (mode === "interior") {
+    return clampVideoPrompt([
+      "Slow, smooth cinematic walkthrough of this exact room: gentle forward",
+      "drift with a subtle pan.", HOLD,
+      "Keep the existing furniture and materials. Light may shift naturally.",
+      "Photorealistic architectural interior footage.", brief,
+    ].join(" "));
+  }
+
+  if (mode === "model_capture") {
+    return clampVideoPrompt([
+      "Photorealistic architectural visualisation of the client's exact building.",
+      HOLD,
+      "Add only what surrounds it: natural daylight with moving shadows, sky and",
+      "atmosphere, landscaping and planting, outdoor furniture, and people moving",
+      "naturally through the scene.",
+      "Camera: one slow steady move holding the source viewpoint. No cuts.", brief,
+    ].join(" "));
+  }
+
+  return clampVideoPrompt([
+    "Photorealistic architectural footage of this exact building.", HOLD,
+    "Add only natural light, sky, planting, outdoor furniture and people.",
+    "Camera: slow smooth arc with a gentle push-in, close to the original",
+    "viewpoint. No cuts.", brief,
+  ].join(" "));
 }
 
 // ── Basic routes ─────────────────────────────────────────────────────────────
