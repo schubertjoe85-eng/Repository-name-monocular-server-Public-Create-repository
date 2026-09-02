@@ -396,48 +396,16 @@ function clampVideoPrompt(text) {
 }
 
 function buildVideoPrompt(userPrompt, mode) {
-  const brief = String(userPrompt || "").trim();
-
-  if (mode === "interior") {
-    return clampVideoPrompt(
-      [
-        "Slow, smooth cinematic walkthrough of this exact room: gentle forward drift",
-        "with a subtle pan. The room stays completely unchanged in every frame —",
-        "same walls, windows, doors, furniture, and materials. Do not add furniture,",
-        "decor, people, or new lighting effects. Keep the existing lighting.",
-        "Photorealistic architectural interior footage.",
-        brief,
-      ].join(" ")
-    );
-  }
-
-  if (mode === "model_capture") {
-    return clampVideoPrompt(
-      [
-        "Photorealistic architectural visualisation footage of the client's exact",
-        "building design on a seamless neutral background. Every frame contains",
-        "exactly three elements: the building, with identical silhouette, storey",
-        "count, roof form, window positions, and materials in every frame; a plain",
-        "clear daytime sky; and a flat neutral ground plane. Camera: one slow,",
-        "steady push-in toward the building with slight parallax, holding the",
-        "source viewpoint so only the surfaces visible in the source frame ever",
-        "appear. Soft, even, neutral daylight throughout.",
-        brief,
-      ].join(" ")
-    );
-  }
-
-  return clampVideoPrompt(
-    [
-      "This exact building stays completely unchanged in every frame — same shape,",
-      "storey count, roof, windows, and materials. Camera: slow, smooth arc with a",
-      "gentle push-in, staying close to the original viewpoint. The surroundings",
-      "stay exactly as shown in the source. Do not add trees, water, landscape,",
-      "roads, neighbouring buildings, cars, people, or any new objects. Neutral",
-      "clear daylight, no sunset. Photorealistic architectural footage.",
-      brief,
-    ].join(" ")
-  );
+  if (mode !== "model_capture") return userPrompt;
+  const hold =
+    "The building geometry is fixed and must not change: keep the exact roof form, " +
+    "wall planes, window and door positions, and overall massing identical to the source image. " +
+    "Do not add or remove any part of the structure.";
+  const add =
+    "Add only: natural lighting and shadow movement, sky and atmosphere, " +
+    "landscaping and planting, outdoor furniture, and people moving naturally.";
+  const camera = "Slow steady camera move. No cuts, no scene change.";
+  return hold + " " + add + " " + userPrompt + ". " + camera;
 }
 
 // ── Basic routes ─────────────────────────────────────────────────────────────
