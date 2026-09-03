@@ -654,6 +654,73 @@ app.get("/render/status/:jobId", (req, res) => {
 // DESKTOP / ARCHICAD PLUGIN API
 // ═════════════════════════════════════════════════════════════
 
+const RC_ENTITLEMENT = "Monocular Pro";
+const rcCache = new Map();
+const RC_CACHE_MS = 5 * 60 * 1000;
+
+async function isRevenueCatPro(appUserId) {
+  if (!appUserId || !process.env.REVENUECAT_SECRET_KEY) return false;
+  const hit = rcCache.get(appUserId);
+  if (hit && Date.now() - hit.at < RC_CACHE_MS) return hit.pro;
+  try {
+    const r = await fetch(
+      "https://api.revenuecat.com/v1/subscribers/" + encodeURIComponent(appUserId),
+      { headers: { Authorization: "Bearer " + process.env.REVENUECAT_SECRET_KEY } }
+    );
+    if (!r.ok) { console.error("RevenueCat lookup failed:", r.status); return false; }
+    const data = await r.json();
+    const ent = data && data.subscriber && data.subscriber.entitlements
+      ? data.subscriber.entitlements[RC_ENTITLEMENT] : null;
+    const pro = !!(ent && (ent.expires_date === null ||
+      (ent.expires_date && new Date(ent.expires_date) > new Date())));
+    rcCache.set(appUserId, { pro, at: Date.now() });
+    return pro;
+  } catch (e) {
+    console.error("RevenueCat lookup error:", e.message);
+    return false;
+  }
+}
+
+async function desktopAuth(req, res, next) {
+  try {
+    const rcUserId = req.header("x-rc-user-id");
+    if (rcUserId && await isRevenueCatPro(rcUserId)) {
+      req.desktopUser = {
+        user_id: "rc:" + rcUserId,
+        label: "RevenueCat Pro",
+        subscriptionActive: true,
+      };
+      return next();
+    }
+    // Not a live subscriber - fall through to credits rather than lock out.
+    const token = req.header("x-monocular-token");
+    if (!token) {
+      return res.status(rcUserId ? 402 : 401).json({
+        ok: false,
+        error: rcUserId
+          ? "No active subscription, and no API token to fall back on."
+          : "Missing x-monocular-token header",
+      });
+    }
+    const { data, error } = await supabase
+      .from("api_tokens")
+      .select("token, user_id, label")
+      .eq("token", token)
+      .single();
+    if (error || !data) {
+      return res.status(401).json({ ok: false, error: "Invalid token" });
+    }
+    supabase.from("api_tokens")
+      .update({ last_used_at: new Date().toISOString() })
+      .eq("token", token).then(() => {});
+    req.desktopUser = { ...data, subscriptionActive: false };
+    next();
+  } catch (err) {
+    console.error("desktopAuth error:", err);
+    res.status(500).json({ ok: false, error: "Auth check failed" });
+  }
+}
+
 async function requireApiToken(req, res, next) {
   try {
     const token = req.header("x-monocular-token");
@@ -696,7 +763,7 @@ function buildScaleDatumFromDimensions(dimensions) {
   );
 }
 
-app.get("/desktop/balance", requireApiToken, async (req, res) => {
+app.get("/desktop/balance", desktopAuth, async (req, res) => {
   try {
     const email = req.desktopUser.user_id;
     const balance = await getCreditBalance(email);
@@ -707,7 +774,7 @@ app.get("/desktop/balance", requireApiToken, async (req, res) => {
   }
 });
 
-app.post("/desktop/render/start", requireApiToken, async (req, res) => {
+app.post("/desktop/render/start", desktopAuth, async (req, res) => {
   try {
     const { prompt, imageBase64, mode = "model_capture", dimensions } = req.body || {};
     if (!imageBase64) {
@@ -865,7 +932,7 @@ async function runRunwayVideoTask(motion, base64Data, ratio, duration) {
   throw new Error("Video timed out waiting on Runway.");
 }
 
-app.post("/desktop/video/start", requireApiToken, async (req, res) => {
+app.post("/desktop/video/start", desktopAuth, async (req, res) => {
   try {
     const {
       prompt,
