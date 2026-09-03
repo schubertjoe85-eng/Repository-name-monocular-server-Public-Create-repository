@@ -1189,10 +1189,22 @@ async function runMultiAngleVideo(images, prompt, mode, ratio) {
     : 5;
   const motion = buildVideoPrompt(prompt, mode);
 
+  // Render each captured angle through the still pipeline first, so Runway
+  // animates a finished photoreal image instead of inventing from clay.
+  const stillPrompt = buildPrompt(prompt, mode);
   const clipUrls = [];
-  for (const img of images) {
-    const base64Data = img.startsWith("data:") ? img.split(",")[1] : img;
-    const url = await runRunwayVideoTask(motion, base64Data, ratio, perClipSeconds);
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i];
+    const rawBase64 = img.startsWith("data:") ? img.split(",")[1] : img;
+    let seedBase64 = rawBase64;
+    try {
+      const still = await runRender(stillPrompt, rawBase64);
+      seedBase64 = still.startsWith("data:") ? still.split(",")[1] : still;
+      console.log("Angle " + i + ": still render OK, seeding Runway with it");
+    } catch (e) {
+      console.error("Angle " + i + ": still render failed, falling back to raw capture:", e.message);
+    }
+    const url = await runRunwayVideoTask(motion, seedBase64, ratio, perClipSeconds);
     clipUrls.push(url);
   }
 
