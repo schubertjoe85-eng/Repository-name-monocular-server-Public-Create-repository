@@ -1248,18 +1248,15 @@ function concatMp4Files(inputPaths, outputPath) {
 // limits) then stitches them into a single mp4 Buffer. 1 image -> single
 // clip, no concat needed. 2-3 images -> shorter per-clip duration so the
 // combined video lands around 10-12s total.
-async function runMultiAngleVideo(images, prompt, mode, ratio) {
-  const rawPerClipSeconds = images.length >= 3 ? 4 : images.length === 2 ? 5 : 10;
-  // Runway duration is an enum: 5 or 10 only.
-  const perClipSeconds = [5, 10].includes(Number(rawPerClipSeconds))
-    ? Number(rawPerClipSeconds)
-    : 5;
-  const motion = buildVideoPrompt(prompt, mode);
+import { createRequire } from "module";
+const seedanceRequire = createRequire(import.meta.url);
+const seedance = seedanceRequire("./seedance-video.cjs");
 
-  // Render each captured angle through the still pipeline first, so Runway
-  // animates a finished photoreal image instead of inventing from clay.
+async function runMultiAngleVideo(images, prompt, mode, ratio, seconds = 10) {
+  const motion = buildVideoPrompt(prompt, mode);
   const stillPrompt = buildPrompt(prompt, mode);
-  const clipUrls = [];
+
+  const refs = [];
   for (let i = 0; i < images.length; i++) {
     const img = images[i];
     const rawBase64 = img.startsWith("data:") ? img.split(",")[1] : img;
@@ -1267,30 +1264,27 @@ async function runMultiAngleVideo(images, prompt, mode, ratio) {
     try {
       const still = await runRender(stillPrompt, rawBase64);
       seedBase64 = still.startsWith("data:") ? still.split(",")[1] : still;
-      console.log("Angle " + i + ": still render OK, seeding Runway with it");
+      console.log("Angle " + i + ": still render OK, using as Seedance reference");
     } catch (e) {
-      console.error("Angle " + i + ": still render failed, falling back to raw capture:", e.message);
+      console.error("Angle " + i + ": still render failed, using raw capture:", e.message);
     }
-    const url = await runRunwayVideoTask(motion, seedBase64, ratio, perClipSeconds);
-    clipUrls.push(url);
+    refs.push("data:image/png;base64," + seedBase64);
   }
+
+  const orientation = String(ratio).startsWith("720:") ? "portrait" : "landscape";
+  const out = await seedance.renderWalkthrough({
+    angleUris: refs,
+    promptText: motion,
+    seconds,
+    resolution: "720p",
+    orientation,
+  });
+  console.log("Seedance: " + out.duration + "s, ~" + out.estimatedCredits + " Runway credits");
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "monocular-video-"));
   try {
-    const localPaths = [];
-    for (let i = 0; i < clipUrls.length; i++) {
-      const p = path.join(tmpDir, "angle" + i + ".mp4");
-      await downloadToFile(clipUrls[i], p);
-      localPaths.push(p);
-    }
-
     const outPath = path.join(tmpDir, "merged.mp4");
-    if (localPaths.length === 1) {
-      fs.copyFileSync(localPaths[0], outPath);
-    } else {
-      await concatMp4Files(localPaths, outPath);
-    }
-
+    await downloadToFile(out.videoUrl, outPath);
     return fs.readFileSync(outPath);
   } finally {
     fs.rm(tmpDir, { recursive: true, force: true }, () => {});
