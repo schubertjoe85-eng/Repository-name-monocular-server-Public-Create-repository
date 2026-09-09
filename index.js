@@ -763,6 +763,35 @@ function buildScaleDatumFromDimensions(dimensions) {
   );
 }
 
+app.post("/desktop/revenuecat/report", desktopAuth, async (req, res) => {
+  try {
+    const { appUserId, fetchToken, isRestore } = req.body || {};
+    if (!appUserId || !fetchToken) {
+      return res.status(400).json({ ok: false, error: "appUserId and fetchToken required" });
+    }
+    if (!process.env.REVENUECAT_SECRET_KEY) {
+      return res.status(500).json({ ok: false, error: "RevenueCat not configured" });
+    }
+    const r = await fetch("https://api.revenuecat.com/v1/receipts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + process.env.REVENUECAT_SECRET_KEY,
+      },
+      body: JSON.stringify({
+        app_user_id: appUserId,
+        fetch_token: fetchToken,
+        is_restore: !!isRestore,
+      }),
+    });
+    rcCache.delete(appUserId);
+    res.status(r.ok ? 200 : r.status).json({ ok: r.ok });
+  } catch (error) {
+    console.error("RevenueCat report error:", error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.get("/desktop/balance", desktopAuth, async (req, res) => {
   try {
     const email = req.desktopUser.user_id;
