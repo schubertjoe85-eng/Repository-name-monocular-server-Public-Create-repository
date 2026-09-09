@@ -28,12 +28,10 @@ function clampDuration(seconds) {
   return Math.min(30, Math.max(4, n));
 }
 
-function buildPromptImage(referenceUris, { pinFirstFrame = false } = {}) {
+function buildPromptImage(referenceUris) {
   if (!referenceUris.length) throw new Error('at least one reference image required');
   if (referenceUris.length > 30) throw new Error('max 30 image references');
-  if (!pinFirstFrame) return referenceUris.map((uri) => ({ uri }));
-  const [first, ...rest] = referenceUris;
-  return [{ uri: first, position: 'first' }, ...rest.map((uri) => ({ uri }))];
+  return referenceUris.map((uri) => ({ uri }));
 }
 
 async function uploadEphemeral(buffer, contentType, apiKey) {
@@ -63,7 +61,6 @@ async function startSeedanceVideo({
   seconds = 10,
   resolution = '720p',
   orientation = 'landscape',
-  pinFirstFrame = true,
   apiKey = process.env.RUNWAY_API_KEY,
 }) {
   const duration = clampDuration(seconds);
@@ -73,7 +70,7 @@ async function startSeedanceVideo({
   }
   const body = {
     model: MODEL,
-    promptImage: buildPromptImage(referenceUris, { pinFirstFrame }),
+    promptImage: buildPromptImage(referenceUris),
     promptText,
     duration,
     ratio: pickRatio(resolution, orientation),
