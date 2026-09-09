@@ -86,8 +86,9 @@ async function runRender(finalPrompt, base64Data) {
     tools: [
       {
         type: "image_generation",
+        model: "gpt-image-2.5-sunburst",
         action: "edit",
-        quality: "high",
+        quality: "xhigh",
         size: "auto",
       },
     ],
