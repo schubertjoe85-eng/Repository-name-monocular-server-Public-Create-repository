@@ -812,19 +812,22 @@ app.post("/desktop/render/start", desktopAuth, async (req, res) => {
     }
 
     const email = req.desktopUser.user_id;
+    const subscriptionActive = !!req.desktopUser.subscriptionActive;
 
-    const balance = await getCreditBalance(email);
-    if (balance <= 0) {
-      return res.status(402).json({ ok: false, error: "No credits on " + email + ". Top up to render." });
-    }
+    if (!subscriptionActive) {
+      const balance = await getCreditBalance(email);
+      if (balance <= 0) {
+        return res.status(402).json({ ok: false, error: "No credits on " + email + ". Top up to render." });
+      }
 
-    const { error: deductErr } = await supabase
-      .from("credits")
-      .update({ balance: balance - 1, updated_at: new Date().toISOString() })
-      .eq("email", email);
-    if (deductErr) {
-      console.error("Desktop credit deduct failed:", deductErr);
-      return res.status(500).json({ ok: false, error: "Credit deduction failed." });
+      const { error: deductErr } = await supabase
+        .from("credits")
+        .update({ balance: balance - 1, updated_at: new Date().toISOString() })
+        .eq("email", email);
+      if (deductErr) {
+        console.error("Desktop credit deduct failed:", deductErr);
+        return res.status(500).json({ ok: false, error: "Credit deduction failed." });
+      }
     }
 
     const scaleDatum = buildScaleDatumFromDimensions(dimensions);
@@ -848,14 +851,16 @@ app.post("/desktop/render/start", desktopAuth, async (req, res) => {
       })
       .catch(async (error) => {
         console.error("Desktop render job " + jobId + " failed:", error);
-        try {
-          const current = await getCreditBalance(email);
-          await supabase
-            .from("credits")
-            .update({ balance: current + 1, updated_at: new Date().toISOString() })
-            .eq("email", email);
-        } catch (refundErr) {
-          console.error("Credit refund failed for " + email + ":", refundErr);
+        if (!subscriptionActive) {
+          try {
+            const current = await getCreditBalance(email);
+            await supabase
+              .from("credits")
+              .update({ balance: current + 1, updated_at: new Date().toISOString() })
+              .eq("email", email);
+          } catch (refundErr) {
+            console.error("Credit refund failed for " + email + ":", refundErr);
+          }
         }
         renderJobs[jobId] = {
           status: "failed",
@@ -982,22 +987,25 @@ app.post("/desktop/video/start", desktopAuth, async (req, res) => {
     const safeRatio = ratio === "720:1280" ? "720:1280" : "1280:720";
 
     const email = req.desktopUser.user_id;
+    const subscriptionActive = !!req.desktopUser.subscriptionActive;
 
-    const balance = await getCreditBalance(email);
-    if (balance < cost) {
-      return res.status(402).json({
-        ok: false,
-        error: "Not enough credits on " + email + " — a " + seconds + "s video costs " + cost + ".",
-      });
-    }
+    if (!subscriptionActive) {
+      const balance = await getCreditBalance(email);
+      if (balance < cost) {
+        return res.status(402).json({
+          ok: false,
+          error: "Not enough credits on " + email + " — a " + seconds + "s video costs " + cost + ".",
+        });
+      }
 
-    const { error: deductErr } = await supabase
-      .from("credits")
-      .update({ balance: balance - cost, updated_at: new Date().toISOString() })
-      .eq("email", email);
-    if (deductErr) {
-      console.error("Desktop video credit deduct failed:", deductErr);
-      return res.status(500).json({ ok: false, error: "Credit deduction failed." });
+      const { error: deductErr } = await supabase
+        .from("credits")
+        .update({ balance: balance - cost, updated_at: new Date().toISOString() })
+        .eq("email", email);
+      if (deductErr) {
+        console.error("Desktop video credit deduct failed:", deductErr);
+        return res.status(500).json({ ok: false, error: "Credit deduction failed." });
+      }
     }
 
     const scaleDatum = buildScaleDatumFromDimensions(dimensions);
@@ -1023,14 +1031,16 @@ app.post("/desktop/video/start", desktopAuth, async (req, res) => {
       })
       .catch(async (error) => {
         console.error("Desktop video job " + jobId + " failed:", error);
-        try {
-          const current = await getCreditBalance(email);
-          await supabase
-            .from("credits")
-            .update({ balance: current + cost, updated_at: new Date().toISOString() })
-            .eq("email", email);
-        } catch (refundErr) {
-          console.error("Video credit refund failed for " + email + ":", refundErr);
+        if (!subscriptionActive) {
+          try {
+            const current = await getCreditBalance(email);
+            await supabase
+              .from("credits")
+              .update({ balance: current + cost, updated_at: new Date().toISOString() })
+              .eq("email", email);
+          } catch (refundErr) {
+            console.error("Video credit refund failed for " + email + ":", refundErr);
+          }
         }
         renderJobs[jobId] = {
           status: "failed",
