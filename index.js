@@ -53,6 +53,50 @@ async function getCreditBalance(email) {
   }
 }
 
+// ── Subscriber fair-use allowance ────────────────────────────────────────────
+// RevenueCat Pro subscribers draw from the same credits ledger as everyone
+// else (1 credit/still, N credits/video where N=seconds) rather than an
+// unconditional bypass, so a subscription can't cost more in OpenAI/Runway
+// usage than it earns in a month. Tops the balance up to the monthly
+// allowance at the start of each calendar month; never lowers a balance
+// (so credits a subscriber separately purchased are never destroyed).
+const SUBSCRIBER_MONTHLY_CREDITS = 15;
+
+async function ensureSubscriberAllowance(email) {
+  if (!email) return;
+  try {
+    const { data } = await supabase
+      .from("credits")
+      .select("balance, updated_at")
+      .eq("email", email)
+      .maybeSingle();
+
+    const now = new Date();
+    const currentMonthKey = now.getUTCFullYear() + "-" + now.getUTCMonth();
+
+    if (!data) {
+      await supabase.from("credits").insert({
+        email,
+        balance: SUBSCRIBER_MONTHLY_CREDITS,
+        updated_at: now.toISOString(),
+      });
+      return;
+    }
+
+    const lastUpdate = new Date(data.updated_at);
+    const lastMonthKey = lastUpdate.getUTCFullYear() + "-" + lastUpdate.getUTCMonth();
+
+    if (lastMonthKey !== currentMonthKey && data.balance < SUBSCRIBER_MONTHLY_CREDITS) {
+      await supabase
+        .from("credits")
+        .update({ balance: SUBSCRIBER_MONTHLY_CREDITS, updated_at: now.toISOString() })
+        .eq("email", email);
+    }
+  } catch (e) {
+    console.error("ensureSubscriberAllowance failed for " + email + ":", e.message);
+  }
+}
+
 // ── Render job store (async job pattern) ─────────────────────────────────────
 // Also holds multi-angle video jobs (job.videoBuffer instead of job.image /
 // job.video) — see MULTI-ANGLE VIDEO section below.
@@ -825,20 +869,23 @@ app.post("/desktop/render/start", desktopAuth, async (req, res) => {
     const email = req.desktopUser.user_id;
     const subscriptionActive = !!req.desktopUser.subscriptionActive;
 
-    if (!subscriptionActive) {
-      const balance = await getCreditBalance(email);
-      if (balance <= 0) {
-        return res.status(402).json({ ok: false, error: "No credits on " + email + ". Top up to render." });
-      }
+    if (subscriptionActive) await ensureSubscriberAllowance(email);
 
-      const { error: deductErr } = await supabase
-        .from("credits")
-        .update({ balance: balance - 1, updated_at: new Date().toISOString() })
-        .eq("email", email);
-      if (deductErr) {
-        console.error("Desktop credit deduct failed:", deductErr);
-        return res.status(500).json({ ok: false, error: "Credit deduction failed." });
-      }
+    const balance = await getCreditBalance(email);
+    if (balance <= 0) {
+      const msg = subscriptionActive
+        ? "You've used this month's Pro allowance (" + SUBSCRIBER_MONTHLY_CREDITS + " renders). It resets next month."
+        : "No credits on " + email + ". Top up to render.";
+      return res.status(402).json({ ok: false, error: msg });
+    }
+
+    const { error: deductErr } = await supabase
+      .from("credits")
+      .update({ balance: balance - 1, updated_at: new Date().toISOString() })
+      .eq("email", email);
+    if (deductErr) {
+      console.error("Desktop credit deduct failed:", deductErr);
+      return res.status(500).json({ ok: false, error: "Credit deduction failed." });
     }
 
     const scaleDatum = buildScaleDatumFromDimensions(dimensions);
@@ -862,16 +909,14 @@ app.post("/desktop/render/start", desktopAuth, async (req, res) => {
       })
       .catch(async (error) => {
         console.error("Desktop render job " + jobId + " failed:", error);
-        if (!subscriptionActive) {
-          try {
-            const current = await getCreditBalance(email);
-            await supabase
-              .from("credits")
-              .update({ balance: current + 1, updated_at: new Date().toISOString() })
-              .eq("email", email);
-          } catch (refundErr) {
-            console.error("Credit refund failed for " + email + ":", refundErr);
-          }
+        try {
+          const current = await getCreditBalance(email);
+          await supabase
+            .from("credits")
+            .update({ balance: current + 1, updated_at: new Date().toISOString() })
+            .eq("email", email);
+        } catch (refundErr) {
+          console.error("Credit refund failed for " + email + ":", refundErr);
         }
         renderJobs[jobId] = {
           status: "failed",
@@ -1000,23 +1045,23 @@ app.post("/desktop/video/start", desktopAuth, async (req, res) => {
     const email = req.desktopUser.user_id;
     const subscriptionActive = !!req.desktopUser.subscriptionActive;
 
-    if (!subscriptionActive) {
-      const balance = await getCreditBalance(email);
-      if (balance < cost) {
-        return res.status(402).json({
-          ok: false,
-          error: "Not enough credits on " + email + " — a " + seconds + "s video costs " + cost + ".",
-        });
-      }
+    if (subscriptionActive) await ensureSubscriberAllowance(email);
 
-      const { error: deductErr } = await supabase
-        .from("credits")
-        .update({ balance: balance - cost, updated_at: new Date().toISOString() })
-        .eq("email", email);
-      if (deductErr) {
-        console.error("Desktop video credit deduct failed:", deductErr);
-        return res.status(500).json({ ok: false, error: "Credit deduction failed." });
-      }
+    const balance = await getCreditBalance(email);
+    if (balance < cost) {
+      const msg = subscriptionActive
+        ? "You've used this month's Pro allowance (" + SUBSCRIBER_MONTHLY_CREDITS + " credits, a " + seconds + "s video costs " + cost + "). It resets next month."
+        : "Not enough credits on " + email + " — a " + seconds + "s video costs " + cost + ".";
+      return res.status(402).json({ ok: false, error: msg });
+    }
+
+    const { error: deductErr } = await supabase
+      .from("credits")
+      .update({ balance: balance - cost, updated_at: new Date().toISOString() })
+      .eq("email", email);
+    if (deductErr) {
+      console.error("Desktop video credit deduct failed:", deductErr);
+      return res.status(500).json({ ok: false, error: "Credit deduction failed." });
     }
 
     const scaleDatum = buildScaleDatumFromDimensions(dimensions);
@@ -1053,16 +1098,14 @@ app.post("/desktop/video/start", desktopAuth, async (req, res) => {
       })
       .catch(async (error) => {
         console.error("Desktop video job " + jobId + " failed:", error);
-        if (!subscriptionActive) {
-          try {
-            const current = await getCreditBalance(email);
-            await supabase
-              .from("credits")
-              .update({ balance: current + cost, updated_at: new Date().toISOString() })
-              .eq("email", email);
-          } catch (refundErr) {
-            console.error("Video credit refund failed for " + email + ":", refundErr);
-          }
+        try {
+          const current = await getCreditBalance(email);
+          await supabase
+            .from("credits")
+            .update({ balance: current + cost, updated_at: new Date().toISOString() })
+            .eq("email", email);
+        } catch (refundErr) {
+          console.error("Video credit refund failed for " + email + ":", refundErr);
         }
         renderJobs[jobId] = {
           status: "failed",
