@@ -1018,14 +1018,25 @@ app.post("/desktop/video/start", desktopAuth, async (req, res) => {
       "Desktop video brief (" + motion.length + " chars, " + seconds + "s " + safeRatio + ", mode: " + mode + ", user: " + email + ")"
     );
 
-    const base64Data = imageBase64.startsWith("data:")
+    const rawBase64 = imageBase64.startsWith("data:")
       ? imageBase64.split(",")[1]
       : imageBase64;
 
     const jobId = crypto.randomUUID();
     renderJobs[jobId] = { status: "pending", createdAt: Date.now() };
 
-    runRunwayVideoTask(motion, base64Data, safeRatio, seconds)
+    (async () => {
+      let seedBase64 = rawBase64;
+      try {
+        const stillPrompt = buildPrompt(briefWithScale, mode);
+        const still = await runRender(stillPrompt, rawBase64);
+        seedBase64 = still.startsWith("data:") ? still.split(",")[1] : still;
+        console.log("Desktop video " + jobId + ": still render OK, using as Runway seed");
+      } catch (e) {
+        console.error("Desktop video " + jobId + ": still render failed, using raw capture:", e.message);
+      }
+      return runRunwayVideoTask(motion, seedBase64, safeRatio, seconds);
+    })()
       .then((video) => {
         renderJobs[jobId] = { status: "done", video, createdAt: Date.now() };
       })
