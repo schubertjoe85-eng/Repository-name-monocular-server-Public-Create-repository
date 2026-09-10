@@ -400,33 +400,44 @@ function buildVideoPrompt(userPrompt, mode) {
   const brief = String(userPrompt || "").trim();
 
   const HOLD =
-    "The building is fixed: identical silhouette, storey count, roof form, " +
-    "wall planes, window and door positions and materials in every frame. " +
-    "Do not add, remove or reshape any part of the structure.";
+    "The attached image is the exact, authoritative source frame — dimensionally " +
+    "and materially exact, not a reference or inspiration. Every frame of the " +
+    "video must match it precisely: identical silhouette, storey count, roof form " +
+    "and pitch, wall planes, window and door positions and proportions, and — " +
+    "critically — identical materials, colours, cladding and roofing profiles, " +
+    "brick or board coursing, and all construction detailing exactly as shown in " +
+    "the source frame. Do not reinterpret, restyle, upgrade, or invent alternative " +
+    "materials, finishes, or design details. Do not add, remove, reshape, or " +
+    "relocate any part of the structure or anything already present in the frame.";
 
   if (mode === "interior") {
     return clampVideoPrompt([
       "Slow, smooth cinematic walkthrough of this exact room: gentle forward",
       "drift with a subtle pan.", HOLD,
-      "Keep the existing furniture and materials. Light may shift naturally.",
+      "Keep the existing furniture and materials exactly as shown. Light may shift naturally.",
       "Photorealistic architectural interior footage.", brief,
     ].join(" "));
   }
 
   if (mode === "model_capture") {
     return clampVideoPrompt([
-      "Photorealistic architectural visualisation of the client's exact building.",
-      HOLD,
-      "Add only what surrounds it: natural daylight with moving shadows, sky and",
-      "atmosphere, landscaping and planting, outdoor furniture, and people moving",
-      "naturally through the scene.",
+      "Photorealistic architectural visualisation of the client's exact building,",
+      "animating the attached source frame.", HOLD,
+      "The only things permitted to change frame-to-frame: natural shift in",
+      "daylight and shadow, and subtle motion of anything already visible in the",
+      "source frame (existing planting, existing people). Do not add any object,",
+      "material, landscaping, or context not already visible in the source frame.",
       "Camera: one slow steady move holding the source viewpoint. No cuts.", brief,
     ].join(" "));
   }
 
   return clampVideoPrompt([
-    "Photorealistic architectural footage of this exact building.", HOLD,
-    "Add only natural light, sky, planting, outdoor furniture and people.",
+    "Photorealistic architectural footage of this exact building, animating the",
+    "attached source frame.", HOLD,
+    "The only things permitted to change frame-to-frame: natural shift in",
+    "daylight and shadow, and subtle motion of anything already visible in the",
+    "source frame. Do not add any object, material, landscaping, or context not",
+    "already visible in the source frame.",
     "Camera: slow smooth arc with a gentle push-in, close to the original",
     "viewpoint. No cuts.", brief,
   ].join(" "));
