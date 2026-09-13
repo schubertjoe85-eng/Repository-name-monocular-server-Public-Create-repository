@@ -859,14 +859,17 @@ app.post("/desktop/revenuecat/report", async (req, res) => {
     if (!appUserId || !fetchToken) {
       return res.status(400).json({ ok: false, error: "appUserId and fetchToken required" });
     }
-    if (!process.env.REVENUECAT_SECRET_KEY) {
+    if (!process.env.REVENUECAT_PUBLIC_KEY) {
       return res.status(500).json({ ok: false, error: "RevenueCat not configured" });
     }
     const r = await fetch("https://api.revenuecat.com/v1/receipts", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Bearer " + process.env.REVENUECAT_SECRET_KEY,
+        // /v1/receipts rejects the account-wide secret key ("Secret API keys
+        // should not be used in your app") - it requires the app-specific
+        // public SDK key instead, same as the RevenueCat SDK itself would use.
+        Authorization: "Bearer " + process.env.REVENUECAT_PUBLIC_KEY,
         // fetchToken is now a StoreKit 2 JWS transaction, not a legacy base64
         // receipt - X-Platform tells RevenueCat how to parse it.
         "X-Platform": "macos",
