@@ -804,6 +804,34 @@ async function requireApiToken(req, res, next) {
   }
 }
 
+function buildMaterialDatumFromModelFacts(modelFacts) {
+  if (!Array.isArray(modelFacts) || !modelFacts.length) return null;
+  const lines = modelFacts
+    .filter((m) => m && (m.colorHex || m.hasTextureMap))
+    .sort((a, b) => (b.meshCount || 0) - (a.meshCount || 0))
+    .slice(0, 12)
+    .map((m, i) => {
+      const parts = [m.name ? `"${m.name}"` : `material ${i + 1}`];
+      if (m.hasTextureMap) {
+        parts.push("has a photo texture applied in the model — reproduce that exact texture, do not substitute a different one");
+      }
+      if (m.colorHex) parts.push(`base colour ${m.colorHex}`);
+      if (typeof m.metalness === "number" && m.metalness > 0.5) parts.push("metallic finish");
+      if (typeof m.roughness === "number") {
+        if (m.roughness < 0.3) parts.push("glossy/reflective surface");
+        else if (m.roughness > 0.7) parts.push("matte surface");
+      }
+      parts.push(`used on ${m.meshCount} part(s) of the model`);
+      return "- " + parts.join(", ");
+    });
+  if (!lines.length) return null;
+  return (
+    "MATERIAL DATUM (read directly from the 3D model's own material data — exact, not a guess from the " +
+    "image; do not substitute, invent, or default to a different material for anything listed here):\n" +
+    lines.join("\n")
+  );
+}
+
 function buildScaleDatumFromDimensions(dimensions) {
   if (!dimensions) return null;
   const { widthM, depthM, heightM, storeys } = dimensions;
@@ -861,7 +889,7 @@ app.get("/desktop/balance", desktopAuth, async (req, res) => {
 
 app.post("/desktop/render/start", desktopAuth, async (req, res) => {
   try {
-    const { prompt, imageBase64, mode = "model_capture", dimensions } = req.body || {};
+    const { prompt, imageBase64, mode = "model_capture", dimensions, modelFacts } = req.body || {};
     if (!imageBase64) {
       return res.status(400).json({ ok: false, error: "Missing imageBase64." });
     }
@@ -889,8 +917,10 @@ app.post("/desktop/render/start", desktopAuth, async (req, res) => {
     }
 
     const scaleDatum = buildScaleDatumFromDimensions(dimensions);
-    const briefWithScale = scaleDatum
-      ? (prompt ? prompt + "\n\n" + scaleDatum : scaleDatum)
+    const materialDatum = buildMaterialDatumFromModelFacts(modelFacts);
+    const factBlocks = [scaleDatum, materialDatum].filter(Boolean).join("\n\n");
+    const briefWithScale = factBlocks
+      ? (prompt ? prompt + "\n\n" + factBlocks : factBlocks)
       : prompt;
 
     console.log("Desktop brief received:", JSON.stringify(briefWithScale), "mode:", mode, "user:", email);
@@ -1030,6 +1060,7 @@ app.post("/desktop/video/start", desktopAuth, async (req, res) => {
       imageBase64,
       mode = "model_capture",
       dimensions,
+      modelFacts,
       duration = 5,
       ratio = "1280:720",
     } = req.body || {};
@@ -1065,8 +1096,10 @@ app.post("/desktop/video/start", desktopAuth, async (req, res) => {
     }
 
     const scaleDatum = buildScaleDatumFromDimensions(dimensions);
-    const briefWithScale = scaleDatum
-      ? (prompt ? prompt + "\n\n" + scaleDatum : scaleDatum)
+    const materialDatum = buildMaterialDatumFromModelFacts(modelFacts);
+    const factBlocks = [scaleDatum, materialDatum].filter(Boolean).join("\n\n");
+    const briefWithScale = factBlocks
+      ? (prompt ? prompt + "\n\n" + factBlocks : factBlocks)
       : prompt;
 
     const motion = buildVideoPrompt(briefWithScale, mode);
@@ -1397,18 +1430,28 @@ async function runMultiAngleVideo(images, prompt, mode, ratio, seconds = 10) {
 }
 
 // POST /api/video/multi
-// Body: { prompt, images: [base64...] (1-3), mode?, email, subscriptionActive?, ratio? }
+// Body: { prompt, images: [base64...] (1-3), mode?, email, ratio? }
 // Access rule matches /api/video: never free, subscription or credits only.
-app.post("/api/video/multi", async (req, res) => {
+// subscriptionActive is derived from desktopAuth (RevenueCat/token verified
+// server-side) — never trust a client-supplied subscriptionActive flag here,
+// since that would let anyone bypass payment by editing client-side state.
+app.post("/api/video/multi", desktopAuth, async (req, res) => {
   try {
     const {
       prompt,
       images,
       mode = "render",
       email,
-      subscriptionActive = false,
       ratio = "1280:720",
+      modelFacts,
     } = req.body || {};
+    const subscriptionActive = !!req.desktopUser.subscriptionActive;
+    if (subscriptionActive) await ensureSubscriberAllowance(email);
+
+    const materialDatum = buildMaterialDatumFromModelFacts(modelFacts);
+    const promptWithMaterials = materialDatum
+      ? (prompt ? prompt + "\n\n" + materialDatum : materialDatum)
+      : prompt;
 
     const imageList = Array.isArray(images) ? images.filter(Boolean).slice(0, 3) : [];
     if (!imageList.length) {
@@ -1432,7 +1475,7 @@ app.post("/api/video/multi", async (req, res) => {
     const jobId = crypto.randomUUID();
     renderJobs[jobId] = { status: "pending", createdAt: Date.now() };
 
-    runMultiAngleVideo(imageList, prompt, mode, ratio)
+    runMultiAngleVideo(imageList, promptWithMaterials, mode, ratio)
       .then((videoBuffer) => {
         renderJobs[jobId] = { status: "done", videoBuffer, createdAt: Date.now() };
       })
