@@ -25,7 +25,11 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 // ── Free render tracking (server-side) ───────────────────────────────────────
 const freeRenders = {};
-const FREE_RENDER_LIMIT = 1;
+// Temporarily raised while capturing App Store screenshots this session -
+// RevenueCat's anonymous id survives Simulator app reinstalls (it's kept in
+// the Keychain, not wiped with the app), so the same test identity kept
+// tripping the real 1-render limit. Revert to 1 once screenshots are done.
+const FREE_RENDER_LIMIT = 20;
 
 function getClientIp(req) {
   return (
