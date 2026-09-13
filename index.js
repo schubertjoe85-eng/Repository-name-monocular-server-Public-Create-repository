@@ -861,6 +861,9 @@ app.post("/desktop/revenuecat/report", desktopAuth, async (req, res) => {
       headers: {
         "Content-Type": "application/json",
         Authorization: "Bearer " + process.env.REVENUECAT_SECRET_KEY,
+        // fetchToken is now a StoreKit 2 JWS transaction, not a legacy base64
+        // receipt - X-Platform tells RevenueCat how to parse it.
+        "X-Platform": "macos",
       },
       body: JSON.stringify({
         app_user_id: appUserId,
@@ -868,6 +871,10 @@ app.post("/desktop/revenuecat/report", desktopAuth, async (req, res) => {
         is_restore: !!isRestore,
       }),
     });
+    if (!r.ok) {
+      const errBody = await r.text().catch(() => "");
+      console.error("RevenueCat receipt rejected:", r.status, errBody);
+    }
     rcCache.delete(appUserId);
     res.status(r.ok ? 200 : r.status).json({ ok: r.ok });
   } catch (error) {
