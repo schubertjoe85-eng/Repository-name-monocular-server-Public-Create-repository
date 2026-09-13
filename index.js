@@ -847,7 +847,13 @@ function buildScaleDatumFromDimensions(dimensions) {
   );
 }
 
-app.post("/desktop/revenuecat/report", desktopAuth, async (req, res) => {
+// No desktopAuth here deliberately: this endpoint's entire purpose is to
+// report a brand-new purchase/restore to RevenueCat, so the caller cannot
+// possibly be a confirmed subscriber yet (desktopAuth would 401 every first
+// purchase - a chicken-and-egg deadlock). Safety comes from RevenueCat
+// itself, which cryptographically verifies fetchToken against Apple's
+// servers - a forged token is simply rejected there, not trusted here.
+app.post("/desktop/revenuecat/report", async (req, res) => {
   try {
     const { appUserId, fetchToken, isRestore } = req.body || {};
     if (!appUserId || !fetchToken) {
