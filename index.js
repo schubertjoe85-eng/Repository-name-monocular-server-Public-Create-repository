@@ -607,7 +607,12 @@ app.post("/api/use-credit", async (req, res) => {
 });
 
 // ── Render access check (shared) ─────────────────────────────────────────────
-async function checkRenderAccess(req, email, subscriptionActive) {
+// subscriptionActive is verified here via RevenueCat (using `email`, which for
+// the mobile/web client is actually the RevenueCat app user id) - it must
+// never be taken from the client's own request body, since that would let
+// anyone bypass payment entirely by editing client-side state or the request.
+async function checkRenderAccess(req, email) {
+  const subscriptionActive = email ? await isRevenueCatPro(email) : false;
   if (subscriptionActive) return { allowed: true, usedFreeRender: false, identity: null };
 
   const balance = await getCreditBalance(email);
@@ -630,7 +635,6 @@ app.post("/render/start", async (req, res) => {
       imageBase64,
       mode = "render",
       email,
-      subscriptionActive = false,
     } = req.body || {};
 
     if (!imageBase64) {
@@ -639,7 +643,7 @@ app.post("/render/start", async (req, res) => {
 
     console.log("User brief received:", JSON.stringify(prompt), "mode:", mode);
 
-    const access = await checkRenderAccess(req, email, subscriptionActive);
+    const access = await checkRenderAccess(req, email);
     if (!access.allowed) {
       return res.status(402).json({
         ok: false,
@@ -1181,7 +1185,6 @@ app.post("/render", async (req, res) => {
       imageBase64,
       mode = "render",
       email,
-      subscriptionActive = false,
     } = req.body || {};
 
     if (!imageBase64) {
@@ -1190,7 +1193,7 @@ app.post("/render", async (req, res) => {
 
     console.log("User brief received:", JSON.stringify(prompt), "mode:", mode);
 
-    const access = await checkRenderAccess(req, email, subscriptionActive);
+    const access = await checkRenderAccess(req, email);
     if (!access.allowed) {
       return res.status(402).json({
         ok: false,
@@ -1216,11 +1219,13 @@ app.post("/render", async (req, res) => {
 // /api/video/multi endpoint below is what actually uses all 3 angles.
 app.post("/api/video", async (req, res) => {
   try {
-    const { prompt, imageBase64, images, mode = "render", email, subscriptionActive = false } = req.body;
+    const { prompt, imageBase64, images, mode = "render", email } = req.body;
     const imageList = Array.isArray(images) && images.length ? images : imageBase64 ? [imageBase64] : [];
     if (!prompt) return res.status(400).json({ ok: false, error: "Missing prompt." });
     if (!imageList.length) return res.status(400).json({ ok: false, error: "Please upload an image." });
 
+    // Verified server-side via RevenueCat, never trusted from the client body.
+    const subscriptionActive = email ? await isRevenueCatPro(email) : false;
     if (!subscriptionActive) {
       const balance = await getCreditBalance(email);
       if (balance <= 0) {
