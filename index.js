@@ -880,9 +880,10 @@ app.post("/desktop/revenuecat/report", async (req, res) => {
         is_restore: !!isRestore,
       }),
     });
+    const bodyText = await r.text().catch(() => "");
+    console.log("RevenueCat receipt response:", r.status, bodyText);
     if (!r.ok) {
-      const errBody = await r.text().catch(() => "");
-      console.error("RevenueCat receipt rejected:", r.status, errBody);
+      console.error("RevenueCat receipt rejected:", r.status, bodyText);
     }
     rcCache.delete(appUserId);
     res.status(r.ok ? 200 : r.status).json({ ok: r.ok });
