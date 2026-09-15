@@ -34,6 +34,18 @@ function buildPromptImage(referenceUris) {
   return referenceUris.map((uri) => ({ uri }));
 }
 
+// Runway's promptImage[].uri must be a real fetchable URL (an uploaded
+// ephemeral URI, or a public http(s) URL) — a raw base64 data: URI there is
+// silently unusable, which is what was happening before this existed: the
+// task would sit un-processable until the poll loop's own timeout fired.
+async function resolveReferenceUri(ref, apiKey) {
+  if (!ref.startsWith('data:')) return ref;
+  const match = ref.match(/^data:([^;]+);base64,(.*)$/s);
+  if (!match) throw new Error('unsupported data URI reference');
+  const [, contentType, base64] = match;
+  return uploadEphemeral(Buffer.from(base64, 'base64'), contentType, apiKey);
+}
+
 async function uploadEphemeral(buffer, contentType, apiKey) {
   const res = await fetch(RUNWAY_BASE + '/uploads', {
     method: 'POST',
@@ -42,17 +54,31 @@ async function uploadEphemeral(buffer, contentType, apiKey) {
       'X-Runway-Version': RUNWAY_VERSION,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ contentType }),
+    body: JSON.stringify({
+      type: 'ephemeral',
+      contentType,
+      contentLength: buffer.length,
+      filename: 'reference.' + (contentType.split('/')[1] || 'png'),
+    }),
   });
   if (!res.ok) throw new Error('upload init failed: ' + res.status);
-  const { uploadUrl, uri } = await res.json();
-  const put = await fetch(uploadUrl, {
-    method: 'PUT',
-    headers: { 'Content-Type': contentType },
-    body: buffer,
-  });
-  if (!put.ok) throw new Error('upload PUT failed: ' + put.status);
-  return uri;
+  const uploadData = await res.json();
+  if (!uploadData.runwayUri) throw new Error('upload init returned no runwayUri');
+  if (uploadData.fields) {
+    const formData = new FormData();
+    Object.entries(uploadData.fields).forEach(([key, value]) => formData.append(key, value));
+    formData.append('file', new Blob([buffer], { type: contentType }), 'reference');
+    const post = await fetch(uploadData.uploadUrl, { method: 'POST', body: formData });
+    if (!post.ok) throw new Error('upload POST failed: ' + post.status);
+  } else {
+    const put = await fetch(uploadData.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': contentType },
+      body: buffer,
+    });
+    if (!put.ok) throw new Error('upload PUT failed: ' + put.status);
+  }
+  return uploadData.runwayUri;
 }
 
 async function startSeedanceVideo({
@@ -68,9 +94,12 @@ async function startSeedanceVideo({
   if (cost > MAX_CREDITS_PER_JOB) {
     throw new Error('refusing job: ~' + cost + ' credits exceeds cap ' + MAX_CREDITS_PER_JOB);
   }
+  const resolvedUris = await Promise.all(
+    referenceUris.map((ref) => resolveReferenceUri(ref, apiKey))
+  );
   const body = {
     model: MODEL,
-    promptImage: buildPromptImage(referenceUris),
+    promptImage: buildPromptImage(resolvedUris),
     promptText,
     duration,
     ratio: pickRatio(resolution, orientation),
