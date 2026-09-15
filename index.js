@@ -1533,8 +1533,10 @@ app.get("/api/video/multi/status/:jobId", (req, res) => {
   return res.json({ ok: true, status: "done", url: "/api/video/multi/file/" + req.params.jobId });
 });
 
-// GET /api/video/multi/file/:jobId — streams the stitched mp4 once, then
-// frees the buffer from memory.
+// GET /api/video/multi/file/:jobId — streams the stitched mp4. Fetched at
+// least twice per render (once to preview in the result <video>, again when
+// the user clicks Save), so it must NOT be deleted after the first serve —
+// it expires via the normal JOB_TTL_MS sweep like every other job instead.
 app.get("/api/video/multi/file/:jobId", (req, res) => {
   const job = renderJobs[req.params.jobId];
   if (!job || !job.videoBuffer) {
@@ -1542,7 +1544,6 @@ app.get("/api/video/multi/file/:jobId", (req, res) => {
   }
   res.setHeader("Content-Type", "video/mp4");
   res.send(job.videoBuffer);
-  delete renderJobs[req.params.jobId];
 });
 
 // ── Keep-alive pings ─────────────────────────────────────────────────────────
