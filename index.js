@@ -112,19 +112,21 @@ setInterval(function () {
   }
 }, 5 * 60 * 1000);
 
-async function runRender(finalPrompt, base64Data) {
+async function runRender(finalPrompt, base64Data, extraImages = []) {
+  const content = [
+    { type: "input_text", text: finalPrompt },
+    { type: "input_image", image_url: "data:image/png;base64," + base64Data },
+  ];
+  for (const extra of extraImages) {
+    if (extra) content.push({ type: "input_image", image_url: "data:image/png;base64," + extra });
+  }
+
   const response = await openai.responses.create({
     model: "gpt-5.6-terra",
     input: [
       {
         role: "user",
-        content: [
-          { type: "input_text", text: finalPrompt },
-          {
-            type: "input_image",
-            image_url: "data:image/png;base64," + base64Data,
-          },
-        ],
+        content,
       },
     ],
     tools: [
@@ -154,6 +156,14 @@ async function runRender(finalPrompt, base64Data) {
 
   return "data:image/png;base64," + imageBase64Out;
 }
+
+const SITE_IMAGE_CLARIFICATION =
+  "\n\nA second attached image is a real aerial/satellite photograph of this exact site " +
+  "location, provided for environmental context only. It shows the real terrain, orientation, " +
+  "and neighbouring structures around the address. Use it ONLY to inform your description of " +
+  "realistic surroundings in the environment part of your output — never treat it as the " +
+  "building's own geometry, never edit it, and never let it override the first image's " +
+  "building, camera, or scale facts.";
 
 // ── Prompt builder ───────────────────────────────────────────────────────────
 function buildPrompt(userPrompt, mode) {
@@ -644,13 +654,22 @@ app.post("/render/start", async (req, res) => {
       imageBase64,
       mode = "render",
       email,
+      siteLocation,
+      siteImageBase64,
     } = req.body || {};
 
     if (!imageBase64) {
       return res.status(400).json({ ok: false, error: "Upload an image first." });
     }
 
-    console.log("User brief received:", JSON.stringify(prompt), "mode:", mode);
+    let promptWithSite = prompt;
+    if (siteLocation && siteLocation.lat && siteLocation.lng) {
+      const siteFacts = await fetchOverpassSiteFacts(siteLocation.lat, siteLocation.lng);
+      const siteDatum = buildSiteDatum(siteFacts, siteLocation.locality, siteLocation.region, siteLocation.roadName);
+      if (siteDatum) promptWithSite = prompt ? prompt + "\n\n" + siteDatum : siteDatum;
+    }
+
+    console.log("User brief received:", JSON.stringify(promptWithSite), "mode:", mode);
 
     const access = await checkRenderAccess(req, email);
     if (!access.allowed) {
@@ -660,15 +679,19 @@ app.post("/render/start", async (req, res) => {
       });
     }
 
-    const finalPrompt = buildPrompt(prompt, mode);
+    let finalPrompt = buildPrompt(promptWithSite, mode);
+    if (siteImageBase64) finalPrompt += SITE_IMAGE_CLARIFICATION;
     const base64Data = imageBase64.startsWith("data:")
       ? imageBase64.split(",")[1]
       : imageBase64;
+    const siteImageData = siteImageBase64
+      ? (siteImageBase64.startsWith("data:") ? siteImageBase64.split(",")[1] : siteImageBase64)
+      : null;
 
     const jobId = crypto.randomUUID();
     renderJobs[jobId] = { status: "pending", createdAt: Date.now() };
 
-    runRender(finalPrompt, base64Data)
+    runRender(finalPrompt, base64Data, [siteImageData])
       .then((image) => {
         renderJobs[jobId] = { status: "done", image, createdAt: Date.now() };
       })
@@ -845,6 +868,103 @@ function buildMaterialDatumFromModelFacts(modelFacts) {
   );
 }
 
+// ── Site awareness (OpenStreetMap Overpass — free, no API key) ──────────────
+// Given real coordinates (resolved client-side by native geocoding — MapKit's
+// CLGeocoder on desktop, expo-location on mobile — so no third-party
+// geocoding account is needed anywhere in this pipeline), pulls real nearby
+// building massing from OSM so the render's site description is grounded in
+// the actual address rather than invented. Never throws: site awareness is
+// an enrichment, not a dependency — a failed/slow Overpass lookup silently
+// falls back to no site data rather than blocking the render.
+async function fetchOverpassSiteFacts(lat, lng) {
+  const query =
+    "[out:json][timeout:12];" +
+    "(way[\"building\"](around:120," + lat + "," + lng + ");" +
+    "relation[\"building\"](around:120," + lat + "," + lng + "););" +
+    "out tags 40;";
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const res = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: query,
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const elements = Array.isArray(data.elements) ? data.elements : [];
+    if (!elements.length) return { count: 0 };
+
+    const levels = [];
+    const typeCounts = {};
+    for (const el of elements) {
+      const tags = el.tags || {};
+      const lvl = parseFloat(tags["building:levels"]);
+      if (!Number.isNaN(lvl) && lvl > 0) levels.push(lvl);
+      const type = tags.building && tags.building !== "yes" ? tags.building : null;
+      if (type) typeCounts[type] = (typeCounts[type] || 0) + 1;
+    }
+    const avgLevels = levels.length
+      ? Math.round((levels.reduce((a, b) => a + b, 0) / levels.length) * 10) / 10
+      : null;
+    const predominantType =
+      Object.entries(typeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+
+    return { count: elements.length, avgLevels, predominantType };
+  } catch (e) {
+    console.error("Overpass site lookup failed:", e.message);
+    return null;
+  }
+}
+
+const OSM_BUILDING_TYPE_WORDS = {
+  house: "detached houses",
+  detached: "detached houses",
+  semidetached_house: "semi-detached houses",
+  terrace: "terrace housing",
+  apartments: "apartment buildings",
+  residential: "residential buildings",
+  commercial: "commercial buildings",
+  retail: "retail buildings",
+  office: "office buildings",
+  industrial: "industrial buildings",
+};
+
+// Turns real mapping facts into a plain-language site description, in the
+// same positive-statement style the render prompt already requires — this
+// feeds into the SAME "user brief" text the prompt builder's environment
+// step (e) already reads, so no change to buildPrompt() itself is needed.
+function buildSiteDatum(siteFacts, locality, region, roadName) {
+  const locationBits = [roadName, locality, region].filter(Boolean);
+  if (!locationBits.length && !siteFacts) return null;
+
+  const sentences = [];
+  if (locationBits.length) {
+    sentences.push("Located at " + locationBits.join(", ") + ".");
+  }
+  if (siteFacts && siteFacts.count > 0) {
+    const typeWords = siteFacts.predominantType
+      ? OSM_BUILDING_TYPE_WORDS[siteFacts.predominantType] || "mixed buildings"
+      : "buildings of similar scale";
+    let sentence = "Nearby surroundings are predominantly " + typeWords;
+    if (siteFacts.avgLevels) {
+      const storeyWord = siteFacts.avgLevels === 1 ? "storey" : "storeys";
+      sentence += ", averaging around " + siteFacts.avgLevels + " " + storeyWord;
+    }
+    sentence += ".";
+    sentences.push(sentence);
+  }
+  if (!sentences.length) return null;
+  return (
+    "SITE DATUM (from real mapping data for this address — describe realistic, " +
+    "plausible surroundings consistent with these facts; never invent a setting " +
+    "that contradicts them): " +
+    sentences.join(" ")
+  );
+}
+
 function buildScaleDatumFromDimensions(dimensions) {
   if (!dimensions) return null;
   const { widthM, depthM, heightM, storeys } = dimensions;
@@ -917,9 +1037,28 @@ app.get("/desktop/balance", desktopAuth, async (req, res) => {
   }
 });
 
+// Live preview for the Address UI, called as the user confirms a geocoded
+// address, before they commit to a render — lets the client show what real
+// site data was found ("Waramanga, ACT — 8 nearby buildings, avg 1.2
+// storeys") rather than silently folding it into the prompt at render time.
+app.post("/site/context", async (req, res) => {
+  try {
+    const { lat, lng, locality, region, roadName } = req.body || {};
+    if (typeof lat !== "number" || typeof lng !== "number") {
+      return res.status(400).json({ ok: false, error: "lat and lng (numbers) are required." });
+    }
+    const siteFacts = await fetchOverpassSiteFacts(lat, lng);
+    const description = buildSiteDatum(siteFacts, locality, region, roadName);
+    res.json({ ok: true, siteFacts, description });
+  } catch (error) {
+    console.error("Site context error:", error);
+    res.status(500).json({ ok: false, error: error.message || "Site lookup failed." });
+  }
+});
+
 app.post("/desktop/render/start", desktopAuth, async (req, res) => {
   try {
-    const { prompt, imageBase64, mode = "model_capture", dimensions, modelFacts } = req.body || {};
+    const { prompt, imageBase64, mode = "model_capture", dimensions, modelFacts, siteLocation, siteImageBase64 } = req.body || {};
     if (!imageBase64) {
       return res.status(400).json({ ok: false, error: "Missing imageBase64." });
     }
@@ -948,22 +1087,31 @@ app.post("/desktop/render/start", desktopAuth, async (req, res) => {
 
     const scaleDatum = buildScaleDatumFromDimensions(dimensions);
     const materialDatum = buildMaterialDatumFromModelFacts(modelFacts);
-    const factBlocks = [scaleDatum, materialDatum].filter(Boolean).join("\n\n");
+    let siteDatum = null;
+    if (siteLocation && siteLocation.lat && siteLocation.lng) {
+      const siteFacts = await fetchOverpassSiteFacts(siteLocation.lat, siteLocation.lng);
+      siteDatum = buildSiteDatum(siteFacts, siteLocation.locality, siteLocation.region, siteLocation.roadName);
+    }
+    const factBlocks = [scaleDatum, materialDatum, siteDatum].filter(Boolean).join("\n\n");
     const briefWithScale = factBlocks
       ? (prompt ? prompt + "\n\n" + factBlocks : factBlocks)
       : prompt;
 
     console.log("Desktop brief received:", JSON.stringify(briefWithScale), "mode:", mode, "user:", email);
 
-    const finalPrompt = buildPrompt(briefWithScale, mode);
+    let finalPrompt = buildPrompt(briefWithScale, mode);
+    if (siteImageBase64) finalPrompt += SITE_IMAGE_CLARIFICATION;
     const base64Data = imageBase64.startsWith("data:")
       ? imageBase64.split(",")[1]
       : imageBase64;
+    const siteImageData = siteImageBase64
+      ? (siteImageBase64.startsWith("data:") ? siteImageBase64.split(",")[1] : siteImageBase64)
+      : null;
 
     const jobId = crypto.randomUUID();
     renderJobs[jobId] = { status: "pending", createdAt: Date.now() };
 
-    runRender(finalPrompt, base64Data)
+    runRender(finalPrompt, base64Data, [siteImageData])
       .then((image) => {
         renderJobs[jobId] = { status: "done", image, createdAt: Date.now() };
       })
