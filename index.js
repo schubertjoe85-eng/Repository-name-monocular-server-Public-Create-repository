@@ -60,7 +60,7 @@ async function getCreditBalance(email) {
 // usage than it earns in a month. Tops the balance up to the monthly
 // allowance at the start of each calendar month; never lowers a balance
 // (so credits a subscriber separately purchased are never destroyed).
-const SUBSCRIBER_MONTHLY_CREDITS = 15;
+const SUBSCRIBER_MONTHLY_CREDITS = 40;
 
 async function ensureSubscriberAllowance(email) {
   if (!email) return;
