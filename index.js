@@ -112,7 +112,9 @@ setInterval(function () {
   }
 }, 5 * 60 * 1000);
 
-async function runRender(finalPrompt, base64Data, extraImages = []) {
+const RENDER_MAX_ATTEMPTS = 2;
+
+async function runRenderOnce(finalPrompt, base64Data, extraImages) {
   const content = [
     { type: "input_text", text: finalPrompt },
     { type: "input_image", image_url: "data:image/png;base64," + base64Data },
@@ -155,6 +157,27 @@ async function runRender(finalPrompt, base64Data, extraImages = []) {
   }
 
   return "data:image/png;base64," + imageBase64Out;
+}
+
+// A single flaky call (transient network error, rate limit, momentary
+// refusal/moderation with no image returned) used to fail the whole render
+// job outright, refund credits, and leave the user to notice and retry by
+// hand. Retrying once here, transparently, turns most of those into a
+// render that just took a couple of seconds longer instead of a failure.
+async function runRender(finalPrompt, base64Data, extraImages = []) {
+  let lastError;
+  for (let attempt = 1; attempt <= RENDER_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await runRenderOnce(finalPrompt, base64Data, extraImages);
+    } catch (error) {
+      lastError = error;
+      console.error("runRender attempt " + attempt + "/" + RENDER_MAX_ATTEMPTS + " failed:", error.message);
+      if (attempt < RENDER_MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+  }
+  throw lastError;
 }
 
 const SITE_IMAGE_CLARIFICATION =
@@ -252,13 +275,21 @@ function buildPrompt(userPrompt, mode) {
       "   proportions — including each opening's size RELATIVE to its wall.",
       "6. SURFACE STATE: whether the model is untextured clay (uniform grey/white) or",
       "   carries textures.",
+      "7. NON-BUILDING ARTIFACTS: identify anything in the capture that is not the",
+      "   building itself — stray flat planes, site-boundary or setback lines,",
+      "   dimension lines and arrows, north-point markers, text labels, or fragments",
+      "   of geometry disconnected from the main massing. These come from the source",
+      "   CAD/model file, not the design. List them here so STEP 2 can omit them.",
       "",
       "STEP 2 — SCENE CONTRACT. The output image contains EXACTLY three elements:",
       "1. THE BUILDING — the model's geometry, unchanged: identical typology, storey",
       "   count, massing, footprint, roof form and pitch; identical camera position,",
       "   angle, lens, and framing; the silhouette of the output overlays the silhouette",
       "   of the input exactly; every window and door at the same count, position, size,",
-      "   and proportion — none added, removed, resized, merged, or moved.",
+      "   and proportion — none added, removed, resized, merged, or moved. This means",
+      "   the building only: any NON-BUILDING ARTIFACT identified in STEP 1 is omitted",
+      "   entirely from the output — it is not part of the design and never renders as",
+      "   a wall, glass panel, translucent surface, or any other built element.",
       "   PROPORTION LOCK: the building renders at the real-world scale established in",
       "   your SCALE DATUM. Its height-to-width ratio, storey heights, wall heights,",
       "   and every opening's size relative to its wall match the input exactly.",
@@ -1197,7 +1228,7 @@ app.post("/desktop/render/start", desktopAuth, async (req, res) => {
 // Uploads a single source frame, starts an image_to_video task, and polls
 // Runway until it resolves. Used both by the desktop single-clip endpoint and
 // by the multi-angle stitcher below (once per angle).
-async function runRunwayVideoTask(motion, base64Data, ratio, duration) {
+async function runRunwayVideoTaskOnce(motion, base64Data, ratio, duration) {
   const imageBuffer = Buffer.from(base64Data, "base64");
 
   const uploadInit = await fetch("https://api.dev.runwayml.com/v1/uploads", {
@@ -1282,6 +1313,30 @@ async function runRunwayVideoTask(motion, base64Data, ratio, duration) {
     }
   }
   throw new Error("Video timed out waiting on Runway.");
+}
+
+// Non-retryable: Runway account/billing and request-validation failures -
+// retrying these wastes the retry budget on something that will fail
+// identically every time (e.g. "You do not have enough credits to run this
+// task" is an account balance problem, not a flaky call).
+function isPermanentRunwayError(error) {
+  const msg = (error && error.message || "").toLowerCase();
+  return msg.includes("credits") || msg.includes("runway 400") || msg.includes("runway 401") || msg.includes("runway 403");
+}
+
+async function runRunwayVideoTask(motion, base64Data, ratio, duration) {
+  let lastError;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      return await runRunwayVideoTaskOnce(motion, base64Data, ratio, duration);
+    } catch (error) {
+      lastError = error;
+      console.error("runRunwayVideoTask attempt " + attempt + "/2 failed:", error.message);
+      if (isPermanentRunwayError(error)) break;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+  throw lastError;
 }
 
 app.post("/desktop/video/start", desktopAuth, async (req, res) => {
