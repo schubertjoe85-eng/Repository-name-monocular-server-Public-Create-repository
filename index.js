@@ -1037,6 +1037,59 @@ app.get("/desktop/balance", desktopAuth, async (req, res) => {
   }
 });
 
+// Fallback geocoder, used ONLY when the client's own native geocoding
+// (CLGeocoder on desktop, expo-location on mobile — both free, no account,
+// tried first) comes back with no match. Nominatim's usage policy prohibits
+// bulk/automated geocoding without self-hosting, but explicitly permits this
+// exact pattern: occasional, low-volume, human-triggered lookups - never
+// call this in a loop or on every address, only as a second attempt after
+// the primary geocoder has already failed for one specific address.
+async function geocodeViaNominatim(address) {
+  const url =
+    "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=1&q=" +
+    encodeURIComponent(address);
+  const res = await fetch(url, {
+    headers: {
+      // Nominatim's usage policy requires a real identifying User-Agent -
+      // requests without one are silently rate-limited or blocked.
+      "User-Agent": "MonocularApp/1.0 (contact: support@monocular-opal.vercel.app)",
+    },
+  });
+  if (!res.ok) return null;
+  const results = await res.json();
+  const first = Array.isArray(results) ? results[0] : null;
+  if (!first) return null;
+
+  const addr = first.address || {};
+  return {
+    ok: true,
+    lat: parseFloat(first.lat),
+    lng: parseFloat(first.lon),
+    locality: addr.suburb || addr.city || addr.town || addr.village || null,
+    region: addr.state || null,
+    roadName: addr.road || null,
+    formattedAddress: first.display_name || null,
+    source: "nominatim",
+  };
+}
+
+app.post("/geocode/fallback", async (req, res) => {
+  try {
+    const { address } = req.body || {};
+    if (!address || typeof address !== "string") {
+      return res.status(400).json({ ok: false, error: "address (string) is required." });
+    }
+    const result = await geocodeViaNominatim(address.trim());
+    if (!result) {
+      return res.status(404).json({ ok: false, error: "No match found for that address." });
+    }
+    res.json(result);
+  } catch (error) {
+    console.error("Nominatim fallback geocode error:", error);
+    res.status(500).json({ ok: false, error: error.message || "Geocoding failed." });
+  }
+});
+
 // Live preview for the Address UI, called as the user confirms a geocoded
 // address, before they commit to a render — lets the client show what real
 // site data was found ("Waramanga, ACT — 8 nearby buildings, avg 1.2
